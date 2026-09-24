@@ -1,0 +1,12 @@
+# v2 (PLAN.md §5.4): Bloomberg field mnemonics for the agency ARM pool export.
+# Confirm every mnemonic on the terminal with FLDS before filling it in. Do not guess.
+# notebooks/bquant_reader.ipynb raises an error until every value below is set.
+fields:
+  pool_id: null
+  cusip: null
+  agency: null
+  product: null
+  current_face: null
+  wac: null
+  months_to_roll: null
+  first_reset_pending: null

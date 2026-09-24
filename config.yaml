@@ -1,0 +1,28 @@
+contact_email: SET_ME            # used in the User-Agent
+paths:
+  raw: data/raw
+  staging: data/staging
+  warehouse: data/warehouse.duckdb
+cdr:
+  start: 2018Q1
+  end: latest
+  request_delay_s: 5
+hmda:
+  years: [2018, 2019, 2020, 2021, 2022, 2023, 2024, 2025]
+  by_state: false
+  keep_raw_csv: false
+model:
+  as_of: 2026-06-30
+  calendar_years: [2026, 2032]
+  scenarios:                     # annual CPR incl. defaults. Placeholder assumptions: set your own.
+    low: 0.06
+    base: 0.10
+    high: 0.15
+  subsequent_resets:
+    enabled: false
+    frequency_months: 12
+  io_assumption: io_through_first_reset
+llm:
+  base_url: null                 # e.g. a local OpenAI-compatible vLLM endpoint
+  model: null
+  api_key_env: LLM_API_KEY

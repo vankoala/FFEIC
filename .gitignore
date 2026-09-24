@@ -1,0 +1,15 @@
+# Downloaded, staged and built data (PLAN.md §4)
+data/
+
+# Python / tooling
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.hypothesis/
+.ipynb_checkpoints/
+
+# Streamlit local secrets
+.streamlit/secrets.toml

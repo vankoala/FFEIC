@@ -1,0 +1,51 @@
+# HMDA purchaser_type -> holder segment (PLAN.md §7.2 step 4).
+# "Retained" means not sold in the origination year. The loan may have been sold later,
+# so every segment is a proxy for the current holder.
+#
+# HMDA purchaser_type codes (2018+ filing instructions; confirm against the public LAR
+# data dictionary in Phase 3):
+#   0 not applicable (not sold)  1 Fannie Mae  2 Ginnie Mae  3 Freddie Mac  4 Farmer Mac
+#   5 private securitizer  6 commercial bank / savings bank / savings association
+#   71 credit union, mortgage company or finance company  72 life insurance company
+#   8 affiliate institution  9 other type of purchaser
+holder_segments:
+  retained:
+    label: Retained (not sold in origination year)
+    purchaser_types: [0]
+    overlaps: Call Report buckets
+  gse:
+    label: Sold to Fannie / Freddie
+    purchaser_types: [1, 3]
+    overlaps: Agency pools (v2)
+  ginnie:
+    label: Ginnie Mae
+    purchaser_types: [2]
+    overlaps: Agency pools (v2)
+  private_securitization:
+    label: Private securitization
+    purchaser_types: [5]
+    overlaps: Non-agency RMBS (out of scope)
+  other:
+    label: Sold to another institution / affiliate / other
+    # 4 (Farmer Mac) is not in the PLAN.md §7.2 table. It is not an agency MBS pool,
+    # so it goes to the unknown-holder segment rather than being dropped.
+    purchaser_types: [4, 6, 71, 72, 8, 9]
+    overlaps: Unknown holder
+# Any purchaser_type not listed above maps here, and the QA report counts those rows.
+unmapped_segment: unmapped
+
+# HMDA panel -> lender_type (PLAN.md §5.3). First matching rule wins; raw codes are kept
+# alongside the mapped value in dim_hmda_lender.
+# VERIFY (Phase 3): confirm agency_code / other_lender_code labels against the panel
+# data dictionary before relying on this mapping.
+#   agency_code: 1 OCC, 2 FRS, 3 FDIC, 5 NCUA, 7 HUD, 9 CFPB
+#   other_lender_code: 0 depository institution; 1, 2, 3, 5 affiliates or mortgage
+#   banking subsidiaries; -1 null
+lender_type_rules:
+  - lender_type: credit_union
+    agency_code: [5]
+  - lender_type: depository
+    other_lender_code: [0]
+  - lender_type: depository_affiliate
+    other_lender_code: [1, 2, 3, 5]
+  - lender_type: other

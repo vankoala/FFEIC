@@ -1,0 +1,14 @@
+# Schedule RC-C Part I, Memorandum item 2.a:
+# closed-end loans secured by first liens on 1-4 family residential properties,
+# fixed-rate by remaining maturity, floating-rate by next repricing date
+# VERIFY (Phase 1): RCFD vs RCON column names per form, and the A567-A569 descriptions.
+repricing_buckets:
+  b_le_3m:  A564   # three months or less
+  b_3_12m:  A565   # over three months through 12 months
+  b_1_3y:   A566   # over one year through three years
+  b_3_5y:   A567   # over three years through five years
+  b_5_15y:  A568   # over five years through 15 years
+  b_gt_15y: A569   # over 15 years
+first_lien_total: "5367"  # RC-C Part I item 1.c.(2)(a)
+total_assets:     "2170"  # Schedule RC item 12
+prefixes: [RCFD, RCON]    # prefer consolidated (FFIEC 031), then domestic (041/051)
