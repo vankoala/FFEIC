@@ -1,5 +1,9 @@
 """Settings: ``config.yaml`` plus ``ARMRESET_*`` environment overrides (PLAN.md §10).
 
+Precedence, highest first: ``ARMRESET_*`` environment variables, then ``config.local.yaml``
+next to the config file (gitignored, for personal values such as ``contact_email``), then
+``config.yaml``.
+
 Relative paths in the config resolve against the directory holding the config file, so the
 CLI, tests and the Streamlit app agree on where data lives whatever the working directory.
 """
@@ -25,13 +29,14 @@ from armreset.periods import Quarter
 
 CONFIG_ENV_VAR = "ARMRESET_CONFIG"
 CONFIG_FILENAME = "config.yaml"
+LOCAL_CONFIG_FILENAME = "config.local.yaml"
 UNSET_CONTACT = "SET_ME"
 PROJECT_URL = "https://github.com/vankoala/FFEIC"
 MIN_REQUEST_DELAY_S = 5.0  # PLAN.md §0: at least 5 seconds between requests
 FIRST_HMDA_YEAR = 2018  # intro_rate_period first appears in the 2018 LAR
 
-# The YAML file for the Settings() call in progress; see load_settings().
-_yaml_file: ContextVar[Path | None] = ContextVar("_yaml_file", default=None)
+# The YAML files for the Settings() call in progress, lowest priority first; see load_settings().
+_yaml_files: ContextVar[tuple[Path, ...]] = ContextVar("_yaml_files", default=())
 
 
 class Paths(BaseModel):
@@ -125,6 +130,7 @@ class Settings(BaseSettings):
     llm: LlmConfig = Field(default_factory=LlmConfig)
 
     _config_path: Path | None = PrivateAttr(default=None)
+    _config_files: tuple[Path, ...] = PrivateAttr(default=())
     _root: Path = PrivateAttr(default_factory=Path.cwd)
 
     @classmethod
@@ -136,15 +142,23 @@ class Settings(BaseSettings):
         dotenv_settings: PydanticBaseSettingsSource,
         file_secret_settings: PydanticBaseSettingsSource,
     ) -> tuple[PydanticBaseSettingsSource, ...]:
-        # Highest priority first: explicit kwargs, then environment, then config.yaml.
+        # Highest priority first: explicit kwargs, then environment, then the YAML files
+        # (config.local.yaml deep-merged over config.yaml).
         sources: list[PydanticBaseSettingsSource] = [init_settings, env_settings]
-        if (yaml_file := _yaml_file.get()) is not None:
-            sources.append(YamlConfigSettingsSource(settings_cls, yaml_file=yaml_file))
+        if yaml_files := _yaml_files.get():
+            sources.append(
+                YamlConfigSettingsSource(settings_cls, yaml_file=list(yaml_files), deep_merge=True)
+            )
         return tuple(sources)
 
     @property
     def config_path(self) -> Path | None:
         return self._config_path
+
+    @property
+    def config_files(self) -> tuple[Path, ...]:
+        """The YAML files that were read, lowest priority first."""
+        return self._config_files
 
     @property
     def root(self) -> Path:
@@ -207,13 +221,17 @@ def find_config(explicit: Path | None = None) -> Path:
 
 
 def load_settings(config: Path | None = None) -> Settings:
-    """Load settings from ``config`` (or :func:`find_config`) with env overrides applied."""
+    """Load settings from ``config`` (or :func:`find_config`), the ``config.local.yaml`` next
+    to it if there is one, and ``ARMRESET_*`` environment overrides."""
     path = find_config(config)
-    token = _yaml_file.set(path)
+    local = path.with_name(LOCAL_CONFIG_FILENAME)
+    files = (path, local) if local.is_file() and local != path else (path,)
+    token = _yaml_files.set(files)
     try:
         settings = Settings()
     finally:
-        _yaml_file.reset(token)
+        _yaml_files.reset(token)
     settings._config_path = path
+    settings._config_files = files
     settings._root = path.parent
     return settings

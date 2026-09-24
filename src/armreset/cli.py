@@ -20,7 +20,6 @@ from armreset.periods import (
     latest_published_quarter,
     parse_years,
     quarter_range,
-    resolve_quarter,
 )
 from armreset.settings import FIRST_HMDA_YEAR, Settings, load_settings
 
@@ -101,18 +100,23 @@ def _not_implemented(command: str, phase: int) -> None:
     raise typer.Exit(code=1)
 
 
+def _is_latest(spec: str) -> bool:
+    return spec.strip().lower() == "latest"
+
+
 def _quarter(spec: str, option: str) -> Quarter:
     try:
-        return resolve_quarter(spec)
+        return Quarter.parse(spec)
     except ValueError as exc:
         raise typer.BadParameter(str(exc), param_hint=option) from exc
 
 
-def _quarters(start: str, end: str) -> list[Quarter]:
-    try:
-        return quarter_range(_quarter(start, "--start"), _quarter(end, "--end"))
-    except ValueError as exc:
-        raise typer.BadParameter(str(exc), param_hint="--start/--end") from exc
+def _warn_if_no_contact(s: Settings) -> None:
+    if not s.contact_configured:
+        err_console.print(
+            "[yellow]contact_email is not set, so the User-Agent carries only the project "
+            "URL. Set it in config.local.yaml.[/yellow]"
+        )
 
 
 def _years(spec: str | None, default: list[int]) -> list[int]:
@@ -139,10 +143,44 @@ def fetch_cdr(
     ] = None,
 ) -> None:
     """Call Report bulk zips ("Call Reports -- Single Period", tab-delimited)."""
+    from armreset.fetch.cdr import CdrFetcher, manual_instructions
+
     s = _settings(ctx)
-    quarters = _quarters(start or s.cdr.start, end or s.cdr.end)
-    console.print(f"CDR quarters requested: {len(quarters)} ({quarters[0]} to {quarters[-1]})")
-    _not_implemented("fetch cdr", 1)
+    start_spec, end_spec = start or s.cdr.start, end or s.cdr.end
+    # Check explicit quarters before any request goes out.
+    first = None if _is_latest(start_spec) else _quarter(start_spec, "--start")
+    last = None if _is_latest(end_spec) else _quarter(end_spec, "--end")
+    _warn_if_no_contact(s)
+    fetcher = CdrFetcher(s, Manifest.for_settings(s))
+    if first is None or last is None:
+        latest, how = fetcher.latest_quarter()
+        console.print(f"Latest CDR quarter: {latest} ({how})")
+        first, last = first or latest, last or latest
+    try:
+        quarters = quarter_range(first, last)
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc), param_hint="--start/--end") from exc
+    console.print(f"CDR quarters requested: {len(quarters)} ({first} to {last})")
+
+    outcomes = fetcher.fetch(quarters)
+    table = Table(title="CDR bulk files", title_justify="left")
+    for column in ("quarter", "status", "file", "size", "published", "detail"):
+        table.add_column(column)
+    manifest = fetcher.manifest
+    for o in outcomes:
+        entry = manifest.get(f"cdr:{o.quarter.label}") if o.path else None
+        table.add_row(
+            o.quarter.label,
+            o.status,
+            o.path.name if o.path else "-",
+            _human_bytes(entry.bytes) if entry else "-",
+            (entry.published or "-") if entry else "-",
+            o.detail,
+        )
+    console.print(table)
+    if missing := [o.quarter for o in outcomes if o.status in ("failed", "skipped")]:
+        err_console.print(manual_instructions(missing, fetcher.zip_dir))
+        raise typer.Exit(code=1)
 
 
 @fetch_app.command("hmda")
@@ -182,17 +220,50 @@ def fetch_panel(
 
 
 @app.command()
-def build(ctx: typer.Context) -> None:
+def build(
+    ctx: typer.Context,
+    force: Annotated[
+        bool, typer.Option("--force", help="Re-stage every file, even when staging is current.")
+    ] = False,
+) -> None:
     """Ingest -> staging -> models -> views, into the DuckDB warehouse."""
-    _settings(ctx)
-    _not_implemented("build", 1)
+    from armreset.pipeline import build as run_build
+
+    s = _settings(ctx)
+    summary = run_build(s, force=force)
+    for result in summary.staged:
+        console.print(
+            f"Staged {result.report_date}: {result.n_banks:,} banks, "
+            f"{len(result.present)} MDRM columns ({len(result.absent)} absent), "
+            f"CDR data as of {result.data_as_of or 'unknown'}"
+        )
+    if summary.reused:
+        console.print(f"Staging already current for {len(summary.reused)} file(s)")
+    for key, reason in summary.unusable.items():
+        err_console.print(f"[yellow]{key}: {reason}[/yellow]")
+    if not summary.tables:
+        err_console.print("Nothing to build yet. Run `armtool fetch cdr` first.")
+        raise typer.Exit(code=1)
+    table = Table(title=f"Warehouse {_relative(s.warehouse_path, s.root)}", title_justify="left")
+    table.add_column("table")
+    table.add_column("rows", justify="right")
+    for name, rows in summary.tables.items():
+        table.add_row(name, f"{rows:,}")
+    console.print(table)
 
 
 @app.command()
 def validate(ctx: typer.Context) -> None:
     """Write the QA report to data/qa_report.md."""
-    _settings(ctx)
-    _not_implemented("validate", 1)
+    from armreset.qa import write_report
+
+    s = _settings(ctx)
+    try:
+        path = write_report(s)
+    except FileNotFoundError as exc:
+        err_console.print(str(exc))
+        raise typer.Exit(code=1) from exc
+    console.print(f"Wrote {_relative(path, s.root)}")
 
 
 @app.command()
@@ -209,12 +280,13 @@ def status(ctx: typer.Context) -> None:
     overview = Table.grid(padding=(0, 2))
     overview.add_column(style="bold")
     overview.add_column()
-    overview.add_row("Config", str(s.config_path))
+    overview.add_row("Config", ", ".join(_relative(f, s.root) for f in s.config_files))
     overview.add_row(
         "Contact",
         s.contact_email
         if s.contact_configured
-        else "[yellow]not set; set contact_email in config.yaml (sent in the User-Agent)[/yellow]",
+        else "[yellow]not set; set contact_email in config.local.yaml (sent in the "
+        "User-Agent)[/yellow]",
     )
     cdr_end = s.cdr.end
     if cdr_end == "latest":
@@ -235,6 +307,12 @@ def status(ctx: typer.Context) -> None:
     if not rows:
         console.print("\nNo downloads yet. Start with `armtool fetch cdr`.")
         return
+    _print_downloads(rows)
+    if s.warehouse_path.exists():
+        _print_warehouse(s)
+
+
+def _print_downloads(rows: list[dict]) -> None:
     table = Table(title="Downloads", title_justify="left")
     for column in ("source", "files", "size", "first period", "last period", "last fetched"):
         table.add_column(column)
@@ -250,6 +328,94 @@ def status(ctx: typer.Context) -> None:
             str(row["missing"]),
         )
     console.print(table)
+
+
+def _print_warehouse(s: Settings) -> None:
+    from armreset.db import connect, relations
+
+    con = connect(s, read_only=True)
+    try:
+        table = Table(title="Warehouse", title_justify="left")
+        for column in ("relation", "type", "rows"):
+            table.add_column(column, justify="right" if column == "rows" else "left")
+        for name, kind in relations(con):
+            rows = con.execute(f'SELECT count(*) FROM "{name}"').fetchone()[0]
+            table.add_row(name, "view" if kind == "VIEW" else "table", f"{rows:,}")
+    finally:
+        con.close()
+    console.print(table)
+
+
+@app.command()
+def spotcheck(
+    ctx: typer.Context,
+    rssd: Annotated[int, typer.Argument(help="The bank's IDRSSD, e.g. 852218.")],
+    quarter: Annotated[
+        str,
+        typer.Option(
+            help="Report quarter, e.g. 2026Q2. Default: the bank's latest in the warehouse."
+        ),
+    ] = "latest",
+) -> None:
+    """Compare one bank's warehouse figures with its own Call Report from CDR."""
+    from armreset.db import connect
+    from armreset.fetch.facsimile import fetch_facsimile
+    from armreset.ingest.cdr import MdrmSpec
+    from armreset.qa import read_sdf, spot_check
+
+    s = _settings(ctx)
+    spec = MdrmSpec.load(s.config_file("mdrm.yaml"))
+    try:
+        con = connect(s, read_only=True)
+    except FileNotFoundError as exc:
+        err_console.print(str(exc))
+        raise typer.Exit(code=1) from exc
+    try:
+        if _is_latest(quarter):
+            report_date = con.execute(
+                "SELECT max(report_date) FROM dim_bank WHERE rssd_id = ?", [rssd]
+            ).fetchone()[0]
+        else:
+            report_date = _quarter(quarter, "--quarter").end_date
+        bank = con.execute(
+            "SELECT name, form, fdic_cert FROM dim_bank WHERE rssd_id = ? AND report_date = ?",
+            [rssd, report_date],
+        ).fetchone()
+        if bank is None:
+            err_console.print(f"RSSD {rssd} has no Call Report in the warehouse for {quarter}.")
+            raise typer.Exit(code=1)
+        name, form, cert = bank
+        if not cert or cert == "0":
+            err_console.print(f"{name} has no FDIC certificate number; CDR facsimiles need one.")
+            raise typer.Exit(code=1)
+        paths = fetch_facsimile(s, Manifest.for_settings(s), cert, Quarter.containing(report_date))
+        rows = spot_check(con, spec, rssd, report_date, read_sdf(paths["sdf"]))
+    finally:
+        con.close()
+
+    console.print(f"{name}: RSSD {rssd}, FDIC cert {cert}, FFIEC {form}, report date {report_date}")
+    table = Table(title_justify="left")
+    table.add_column("column", no_wrap=True)
+    table.add_column("MDRM", no_wrap=True)
+    table.add_column("line", no_wrap=True)
+    table.add_column("caption on the form")
+    table.add_column("filed $mm", justify="right", no_wrap=True)
+    table.add_column("warehouse $mm", justify="right", no_wrap=True)
+    table.add_column("match", no_wrap=True)
+    for r in rows:
+        table.add_row(
+            r.column,
+            r.mdrm or "-",
+            r.line,
+            r.caption,
+            f"{float(r.filed_thousands) / 1e3:,.1f}" if r.filed_thousands else "-",
+            f"{r.warehouse_usd / 1e6:,.1f}" if r.warehouse_usd is not None else "-",
+            "yes" if r.match else "[red]NO[/red]",
+        )
+    console.print(table)
+    console.print(f"Filed report: {_relative(paths['pdf'], s.root)}")
+    if not all(r.match for r in rows):
+        raise typer.Exit(code=1)
 
 
 @app.command("app")

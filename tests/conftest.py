@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import socket
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -13,11 +14,32 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
 @pytest.fixture(autouse=True)
-def _isolate_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Keep a developer's ARMRESET_* overrides out of every test."""
+def _isolate(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep every test away from the real data/ directory.
+
+    Drops a developer's ARMRESET_* overrides, runs the test from a temp directory, and points
+    ARMRESET_CONFIG at a file that doesn't exist, so a test that loads settings without the
+    ``project`` fixture fails loudly instead of reading the repo's config and data.
+    """
     for key in list(os.environ):
         if key.startswith("ARMRESET_"):
             monkeypatch.delenv(key)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("ARMRESET_CONFIG", str(tmp_path / "no-project-configured.yaml"))
+
+
+class NetworkBlocked(BaseException):
+    """Raised on any connection attempt. A BaseException, so no retry loop or ``except
+    Exception`` can swallow it and the test fails at once."""
+
+
+@pytest.fixture(autouse=True)
+def _no_network(monkeypatch: pytest.MonkeyPatch) -> None:
+    def refuse(*args: Any, **kwargs: Any) -> None:
+        raise NetworkBlocked(f"tests must not open network connections: {args[1:]!r}")
+
+    monkeypatch.setattr(socket.socket, "connect", refuse)
+    monkeypatch.setattr(socket, "create_connection", refuse)
 
 
 @pytest.fixture

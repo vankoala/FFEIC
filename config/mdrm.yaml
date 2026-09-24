@@ -1,7 +1,10 @@
+# Call Report items -> MDRM codes (PLAN.md §5.1). A column name is prefix + code, e.g. RCON5367.
+# For each item the prefixes are tried in order and the first non-blank value wins.
+# The VERIFY checks behind the prefix orders are recorded in docs/verification.md.
+
 # Schedule RC-C Part I, Memorandum item 2.a:
 # closed-end loans secured by first liens on 1-4 family residential properties,
 # fixed-rate by remaining maturity, floating-rate by next repricing date
-# VERIFY (Phase 1): RCFD vs RCON column names per form, and the A567-A569 descriptions.
 repricing_buckets:
   b_le_3m:  A564   # three months or less
   b_3_12m:  A565   # over three months through 12 months
@@ -11,4 +14,22 @@ repricing_buckets:
   b_gt_15y: A569   # over 15 years
 first_lien_total: "5367"  # RC-C Part I item 1.c.(2)(a)
 total_assets:     "2170"  # Schedule RC item 12
+# Added after VERIFY: RC-N item 1.c.(2)(a), column C. The buckets plus this equal RCON5367.
+nonaccrual_first_lien: C229
 prefixes: [RCFD, RCON]    # prefer consolidated (FFIEC 031), then domestic (041/051)
+
+# VERIFY result: every form reports Memo 2.a in domestic offices only (RCON), and it
+# reconciles to RCON5367 (column B) plus RCONC229. FFIEC 031 filers also report RCFD5367
+# (column A, consolidated), which adds foreign offices, so these items stay on RCON.
+prefix_overrides:
+  "5367": [RCON]
+  C229: [RCON]
+  A564: [RCON]
+  A565: [RCON]
+  A566: [RCON]
+  A567: [RCON]
+  A568: [RCON]
+  A569: [RCON]
+
+# Bulk-file schedules that hold the codes above (POR is always read for bank identity).
+schedules: [RC, RCCI, RCN]

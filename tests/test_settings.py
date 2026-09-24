@@ -107,3 +107,20 @@ def test_llm_disabled_without_base_url(patch_config) -> None:
     assert not load_settings().llm.enabled
     patch_config({"llm": {"base_url": "http://localhost:8000/v1", "model": "some-model"}})
     assert load_settings().llm.enabled
+
+
+def test_local_config_overrides_config_yaml(project: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    (project / "config.local.yaml").write_text(
+        "contact_email: analyst@example.com\nhmda:\n  keep_raw_csv: true\n"
+    )
+    s = load_settings()
+    assert s.config_files == (project / "config.yaml", project / "config.local.yaml")
+    assert s.contact_email == "analyst@example.com"
+    assert s.hmda.keep_raw_csv is True
+    assert s.hmda.years  # deep merge: the rest of hmda still comes from config.yaml
+    monkeypatch.setenv("ARMRESET_CONTACT_EMAIL", "env@example.com")
+    assert load_settings().contact_email == "env@example.com"  # environment beats both files
+
+
+def test_local_config_is_optional(project: Path) -> None:
+    assert load_settings().config_files == (project / "config.yaml",)

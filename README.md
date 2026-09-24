@@ -10,28 +10,50 @@ them side by side, never summed:
   change, rolled forward into a first-reset calendar.
 
 `PLAN.md` is the build plan. `docs/verification.md` records what was checked against real
-files.
+files, `docs/methodology.md` states every assumption, and `docs/data_dictionary.md`
+describes the tables.
 
-## Quickstart
+## Setup
 
 ```bash
 uv sync                          # Python 3.11+, installs the `armtool` CLI
-uv run armtool --help
-uv run armtool status            # what's downloaded, as-of dates, manifest summary
 ```
 
-Set `contact_email` in `config.yaml` before fetching. It goes into the User-Agent sent to
-the FFIEC and CFPB servers. Any setting can be overridden with an `ARMRESET_` environment
-variable, using `__` for nesting (for example `ARMRESET_HMDA__KEEP_RAW_CSV=true`).
-`ARMRESET_CONFIG` points the tool at a different config file.
+Put your contact email in `config.local.yaml` before fetching. It goes into the User-Agent
+sent to the FFIEC and CFPB servers.
+
+```yaml
+# config.local.yaml: gitignored, overrides config.yaml
+contact_email: you@example.com
+```
+
+Any setting can also be overridden with an `ARMRESET_` environment variable, using `__` for
+nesting (for example `ARMRESET_HMDA__KEEP_RAW_CSV=true`). `ARMRESET_CONFIG` points the tool
+at a different config file.
+
+## Usage
+
+```bash
+uv run armtool fetch cdr --start latest --end latest   # Call Report bulk zip(s)
+uv run armtool build                                   # staging Parquet + DuckDB tables
+uv run armtool validate                                # data/qa_report.md
+uv run armtool status                                  # downloads, as-of dates, tables
+uv run armtool spotcheck 852218                        # one bank vs its filed Call Report
+```
+
+Downloads go one request at a time, at least 5 seconds apart, and a file recorded in
+`data/raw/manifest.json` is never downloaded again.
+
+If the automated CDR download fails, `fetch cdr` prints manual steps. Save the zip from
+the CDR bulk-data page into `data/raw/cdr/` and run `fetch cdr` again to record it.
 
 ## Build status
 
 | Phase | Work | Status |
 |---|---|---|
 | 0 | Scaffold, config, settings, manifest, test harness | done |
-| 1 | CDR fetch and ingest, latest quarter | next |
-| 2 | CDR history, `dim_bank`, CDR views | |
+| 1 | CDR fetch and ingest, latest quarter | done |
+| 2 | CDR history, `dim_bank`, CDR views | next |
 | 3 | HMDA 2021 and panel | |
 | 4 | HMDA all years, reset calendar, coverage matrix | |
 | 5 | Streamlit pages | |
@@ -41,6 +63,6 @@ variable, using `__` for nesting (for example `ARMRESET_HMDA__KEEP_RAW_CSV=true`
 ## Development
 
 ```bash
-uv run pytest
+uv run pytest                    # no network: any connection attempt fails the test
 uv run ruff check . && uv run ruff format --check .
 ```

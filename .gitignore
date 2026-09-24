@@ -1,6 +1,9 @@
 # Downloaded, staged and built data (PLAN.md §4)
 data/
 
+# Personal settings (contact_email etc.): overrides config.yaml, never committed
+config.local.yaml
+
 # Python / tooling
 .venv/
 __pycache__/
