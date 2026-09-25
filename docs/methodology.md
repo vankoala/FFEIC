@@ -70,6 +70,18 @@ So the tool never adds numbers across sources.
   its total assets.
 - **Shares of total assets are approximate for 031 filers:** they compare domestic
   first-lien loans with consolidated assets.
+- **Unreported buckets make the metric unknown, not zero.** If either short bucket is
+  unreported, `within_12m` is null, and the industry share leaves that bank out of the
+  numerator and the denominator alike.
+- **Industry series** (`v_cdr_industry`) sum every filer in each quarter. The set of banks
+  changes as banks merge, fail and open, so a change between quarters mixes changes in
+  books with changes in who files.
+- **Bank rankings** (`v_cdr_bank_latest`) use the latest quarter in the warehouse and
+  include only banks that filed in it.
+  - A bank whose last report is older is left out: it has merged, failed or changed charter,
+    and another filer now holds its loans.
+  - This reads PLAN.md's "latest quarter per bank" as the latest quarter, so the same loans
+    aren't ranked twice.
 
 ### Reconciliation and QA flags
 

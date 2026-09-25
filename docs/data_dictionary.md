@@ -1,7 +1,8 @@
 # Data dictionary
 
 Everything lives in `data/warehouse.duckdb`, built by `armtool build`. Amounts are in US
-dollars unless a column says otherwise. The views listed in PLAN.md §6 arrive in phase 2.
+dollars unless a column says otherwise. Columns ending in `_pct` or containing `_pct_` are
+percentage points: 8.7 means 8.7%.
 
 ## Tables
 
@@ -50,6 +51,50 @@ One row per flag raised on a bank-quarter. The flag rules are in `docs/methodolo
 | `rssd_id`, `report_date` | BIGINT, DATE | The flagged bank-quarter |
 | `flag` | VARCHAR | Flag name |
 | `detail` | VARCHAR | The values behind the flag, e.g. `first_lien_total=…; sum_buckets=…` |
+
+## Views
+
+The SQL console lists these. HMDA views (`v_hmda_orig_summary`, `v_reset_calendar`,
+`v_bank_hmda_link`) arrive in phases 3–4.
+
+### `v_cdr_industry`
+
+One row per report date: every bank's Call Report figures summed. Bucket amounts are
+repricing or maturing, measured from that report date.
+
+| Column | Notes |
+|---|---|
+| `report_date` | Quarter-end report date |
+| `n_banks` | Banks filing a Call Report that quarter |
+| `n_banks_reporting_buckets` | Banks reporting at least one of the six buckets |
+| `n_banks_all_buckets` | Banks reporting all six buckets |
+| `total_assets`, `first_lien_total` | Sums over all filers |
+| `b_le_3m` … `b_gt_15y` | Sum of each bucket |
+| `sum_buckets`, `implied_nonaccrual`, `reported_nonaccrual` | Sums of the fact-table columns |
+| `within_12m` | Sum of `b_le_3m + b_3_12m` |
+| `within_3y` | Sum of `b_le_3m + b_3_12m + b_1_3y` |
+| `within_12m_pct_first_lien` | `within_12m` as a percent of the first-lien total at banks reporting both short buckets |
+| `within_3y_pct_first_lien` | The same for `within_3y` |
+| `bucket_coverage_pct` | First-lien balances at banks reporting buckets, as a percent of all first-lien balances |
+
+### `v_cdr_bank_latest`
+
+One row per bank that filed in the **latest quarter in the warehouse**. A bank whose last
+report is older is left out: it has merged, failed or changed charter, and its loans now sit
+with another filer. Keeping it would count the same loans twice in a ranking.
+
+| Column | Notes |
+|---|---|
+| `rssd_id`, `report_date` | Key |
+| `name`, `city`, `state`, `form`, `fdic_cert` | From `dim_bank` |
+| `total_assets`, `first_lien_total`, `b_le_3m` … `b_gt_15y` | From `fact_cdr_repricing` |
+| `within_12m` | `b_le_3m + b_3_12m`; null if either bucket is unreported |
+| `within_3y` | `within_12m + b_1_3y` |
+| `within_12m_pct_first_lien`, `within_3y_pct_first_lien` | Percent of the bank's first-lien book |
+| `within_12m_pct_assets`, `within_3y_pct_assets` | Percent of total assets (for 031 filers: domestic first-lien loans over consolidated assets) |
+| `implied_nonaccrual`, `reported_nonaccrual` | From `fact_cdr_repricing` |
+| `n_qa_flags`, `qa_flags` | Count and comma-separated names of the bank-quarter's QA flags |
+| `prefix_source` | Columns the values came from |
 
 ## Staging files
 

@@ -250,6 +250,8 @@ def build(
     for name, rows in summary.tables.items():
         table.add_row(name, f"{rows:,}")
     console.print(table)
+    if summary.views:
+        console.print(f"Views: {', '.join(summary.views)}")
 
 
 @app.command()

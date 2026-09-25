@@ -1,4 +1,4 @@
-"""``armtool build`` (PLAN.md §2): raw files -> staging Parquet -> DuckDB tables."""
+"""``armtool build`` (PLAN.md §2): raw files -> staging Parquet -> DuckDB tables and views."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ from pathlib import Path
 
 import polars as pl
 
-from armreset.db import connect, replace_table
+from armreset.db import connect, create_views, replace_table
 from armreset.ingest.cdr import MdrmSpec, StageResult, stage_quarter
 from armreset.manifest import Manifest
 from armreset.model.repricing import build_dim_bank, build_fact, qa_flags
@@ -24,6 +24,7 @@ class BuildSummary:
     reused: list[Path] = field(default_factory=list)
     unusable: dict[str, str] = field(default_factory=dict)  # manifest key -> reason
     tables: dict[str, int] = field(default_factory=dict)
+    views: list[str] = field(default_factory=list)
 
 
 def cdr_staging_path(settings: Settings, report_date: date) -> Path:
@@ -90,6 +91,7 @@ def build(settings: Settings, force: bool = False) -> BuildSummary:
         con.begin()
         for name, df in tables.items():
             summary.tables[name] = replace_table(con, name, df)
+        summary.views = create_views(con)
         con.commit()
     except Exception:
         con.rollback()

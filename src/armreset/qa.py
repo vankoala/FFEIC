@@ -76,12 +76,16 @@ def cdr_flag_counts(con: duckdb.DuckDBPyConnection) -> pl.DataFrame:
 
 
 def cdr_prefix_usage(con: duckdb.DuckDBPyConnection) -> pl.DataFrame:
-    return con.sql(
+    """Banks per quarter by the columns their values came from: one column per pattern."""
+    long = con.sql(
         """
-        SELECT report_date, coalesce(prefix_source, '(none)') AS "columns used", count(*) AS banks
-        FROM fact_cdr_repricing GROUP BY ALL ORDER BY report_date, banks DESC
+        SELECT report_date, coalesce(prefix_source, '(none)') AS columns_used, count(*) AS banks
+        FROM fact_cdr_repricing GROUP BY ALL
         """
     ).pl()
+    order = long.group_by("columns_used").agg(pl.col("banks").sum()).sort("banks", descending=True)
+    wide = long.pivot(on="columns_used", index="report_date", values="banks")
+    return wide.select("report_date", *order["columns_used"]).fill_null(0).sort("report_date")
 
 
 def markdown_table(df: pl.DataFrame) -> str:

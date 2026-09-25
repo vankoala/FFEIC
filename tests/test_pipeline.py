@@ -47,11 +47,13 @@ def _counts(settings: Settings) -> dict[str, int]:
         con.close()
 
 
-def test_build_writes_the_cdr_tables(built: Settings) -> None:
+def test_build_writes_the_cdr_tables_and_views(built: Settings) -> None:
     assert _counts(built) == {
         "dim_bank": len(BANKS),
         "fact_cdr_repricing": len(BANKS),
         "qa_cdr_flags": 8,  # see test_repricing.test_qa_flags_per_bank
+        "v_cdr_industry": 1,  # one quarter
+        "v_cdr_bank_latest": len(BANKS),
     }
 
 
