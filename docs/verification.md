@@ -19,12 +19,120 @@ Status key:
 | 4 | `ffiec-data-collector` against the current CDR page | phases 0–1 | **confirmed**, with our session swapped in |
 | 5 | HMDA nationwide CSV: size, run time, redirects, multi-value `dwelling_categories` | phase 3 | **adjusted**: the API takes at most two filters; the dwelling filter moved to staging |
 | 6 | `intro_rate_period` for fixed-rate (`NA`) and exempt (`Exempt` vs `1111`) rows | phase 3 | **confirmed**: `NA` and `Exempt`; `1111` never appears in this field |
-| 7 | Panel download path; `agency_code` / `other_lender_code` → `lender_type` | phase 3 | **adjusted**: panel exists for 2018–2023 only; lender type needs the Call Report link |
+| 7 | Panel download path; `agency_code` / `other_lender_code` → `lender_type` | phase 3 | **adjusted**: panel exists for 2018–2023 only; lender type needs the Call Report link; sources for 2024–2025 measured |
 | 8 | Public `loan_amount` is the $10k-band midpoint | phase 3 | **confirmed** on all 14,154,790 rows |
 | §5.1 | A567–A569 descriptions match the bucket labels | phase 1 | **confirmed** on the form; the bulk label for A568 is wrong |
 | §5.1 | The buckets plus nonaccrual equal the first-lien total | phases 1–2 | **confirmed** for all 166,554 bank-quarters; checked on every build |
 | §5.2 | `intro_m` histogram clusters near 12, 36, 60, 84 and 120 | phase 3 | **confirmed** for 36–120; 180 and 1 month are also real clusters |
 | §11 | One large bank's six buckets match its Call Report PDF | phase 1 | **passed**: JPMorgan Chase Bank, 2026-06-30 |
+
+## Before phase 4 (2026-09-25): lender data for 2024 and 2025
+
+No Reporter Panel exists for 2024 or 2025 (item 7). Before choosing how to fill the gap, the
+three options were measured on real files:
+- reuse the 2023 panel;
+- use the Philadelphia Fed's HMDA Lender File;
+- leave the two years unlinked.
+
+### Files fetched
+
+| File | Requests | Size | Contents |
+|---|---|---|---|
+| 2022 panel | 2 (see below) | 228 KB | 4,467 lenders, no repeated LEIs |
+| 2023 panel | 1 | 282 KB | 5,113 lenders, no repeated LEIs |
+| 2024 filers list (Data Browser) | 1 | 497 KB | 4,908 LEIs with names and LAR record counts (12,236,065 records) |
+| 2025 filers list | 1 | 472 KB | 4,660 LEIs (13,481,647 records) |
+| Philadelphia Fed HMDA Lender File | 2 (a HEAD, then the file) | 15.0 MB | See below |
+
+- **The 2022 panel was downloaded twice.**
+  - The zip holds `__MACOSX/._2022_public_panel_csv.csv`, a macOS metadata file, next to the
+    CSV.
+  - The column check expected exactly one CSV, so it refused the zip, and the fetcher deleted
+    the download.
+  - **Change:** panel zips now skip macOS metadata entries.
+  - **Change:** a download that fails the check is now kept and recorded, so fixing the check
+    never means downloading again. A file placed by hand that fails is reported and left
+    unrecorded.
+- **Finding the Lender File took two page reads:** its page and its variable definitions.
+
+### The Philadelphia Fed HMDA Lender File
+
+- **URL:** `https://www.philadelphiafed.org/-/media/FRBP/Assets/Surveys-And-Data/hmda/hmda-2018-present.xlsx`.
+  - It's a direct download with no registration.
+  - It answered the tool's User-Agent through the proxy.
+- **Recorded** in the manifest as `philfed_lender:hmda-2018-present`, in
+  `data/raw/philfed_lender/`. It is never downloaded again.
+- **Layout:** one sheet, `beta3`, with 73 columns.
+- **One row per `(YEAR, LEI)`:** in every year from 2018 to 2025, with no repeated pairs and
+  no blank LEIs.
+- **Rows per year:**
+
+  | 2018 | 2019 | 2020 | 2021 | 2022 | 2023 | 2024 | 2025 |
+  |---|---|---|---|---|---|---|---|
+  | 5,732 | 5,569 | 4,527 | 4,376 | 4,484 | 5,129 | 4,926 | 4,782 |
+- **Every row has a `TYPE`:** the institution type from the Fed's National Information
+  Center (NIC).
+  - Codes present: 10, 11, 12, 14, 20, 21, 22, 30, 31, 32, 40 and 41.
+  - The failed-institution codes (13, 23, 33) don't appear.
+- **Reading it needs an XLSX reader.** It was measured with `fastexcel`, which is not yet a
+  project dependency.
+
+### Coverage of 2024 and 2025
+
+| | Reuse the 2023 panel | Lender File | Unlinked |
+|---|---|---|---|
+| 2024 filers found | 4,777 of 4,908 (97.3%; 99.5% of records) | 4,908 (100%) | Names only |
+| 2025 filers found | 4,547 of 4,660 (97.6%; 99.5% of records) | 4,660 (100%) | Names only |
+| Filers linked to that year's Call Reports, 2024 | 2,381 | 2,442 | 0 |
+| Filers linked to that year's Call Reports, 2025 | 2,282 | 2,337 | 0 |
+| Lender type | Rules applied to 2023 codes | NIC type for every lender | Unknown |
+
+- **The Lender File links every bank that the 2023 panel links**, plus 61 more in 2024 and 55
+  more in 2025. The extra ones are:
+  - banks absent from the 2023 panel, such as Granite Bank and Unity Bank;
+  - banks whose 2023-panel RSSD is their holding company, such as F & M Bank Corp. and SIS
+    Bancorp, MHC.
+- **The 2023 panel has an RSSD for 19 independent mortgage companies that the Lender File
+  leaves blank.**
+  - They include Guild, DHI Mortgage, Planet Home Lending and Mutual of Omaha Mortgage:
+    3.2% of 2024 records.
+  - None files a Call Report, so the link loses nothing.
+- **Lender details drift between years.** 3,999 lenders are in both the 2021 and 2023 panels.
+  - 355 of them (8.9%) changed RSSD, regulator, lender code or top holder.
+  - Reusing the 2023 panel for 2025 would carry two years of that drift.
+- **The Lender File's LAR counts match the Data Browser's filer counts** for all 4,908 filers
+  in 2024 and all 4,660 in 2025.
+- **Open for phase 4:** the Lender File lists some lenders that the Data Browser filers lists
+  don't.
+  - 2024: 18 lenders, 23,134 records, none of them in the Lender File's snapshot count.
+  - 2025: 122 lenders, 61,959 records (0.5%).
+  - Phase 4 checks whether their loans are in the Data Browser download.
+
+### Cross-check with the CFPB panels (2021 and 2023)
+
+- **Every panel LEI is in the Lender File**, which has 43 more lenders in 2021 and 16 more in
+  2023.
+  - The 2021 extras include all 42 late filers that `v_bank_hmda_link` shows as
+    `not_in_panel` (44,739 loans).
+- **Agency codes agree** for all but one lender in each year.
+- **RSSDs agree** for 4,195 of 4,333 lenders in 2021 and 5,032 of 5,113 in 2023.
+  - 32 lenders in 2021 and 33 in 2023 have an RSSD in both files, but different ones. The
+    Lender File's RSSD is a Call Report filer 5 and 10 times; the panel's, 0 and 1 times.
+  - Most of the rest are credit unions (22 and 20), which file no Call Report under either
+    ID.
+- **For banks and savings institutions** (`TYPE` 10 and 20), the Lender File's RSSD filed a
+  Call Report that year for:
+  - 1,947 of 1,947 in 2021; the panel's did for 1,910;
+  - 2,520 of 2,524 in 2023; the panel's did for 2,509.
+- **The 2021 lender types from the rules in `config/segments.yaml` agree with NIC's type for
+  4,236 of 4,333 lenders (97.8%).** Most of the 97 disagreements are lenders the rules call
+  independent mortgage companies. NIC records them as:
+  - credit unions or credit-union subsidiaries (40);
+  - bank or thrift subsidiaries and affiliates (24);
+  - banks (14).
+
+  In the other direction, the rules call 17 lenders bank affiliates that NIC records as
+  independent. They call 2 lenders banks that NIC records as credit unions.
 
 ## Phase 3 (2026-09-25): HMDA 2021 and the 2021 panel
 

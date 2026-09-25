@@ -14,7 +14,7 @@ from pathlib import Path
 
 import polars as pl
 
-from armreset.fetch.panel import FILERS_SOURCE, SOURCE
+from armreset.fetch.panel import FILERS_SOURCE, SOURCE, panel_member
 from armreset.manifest import Manifest
 from armreset.segments import Segments
 
@@ -50,8 +50,7 @@ def read_panel(path: Path) -> pl.DataFrame:
     """The panel CSV (comma or pipe delimited, zipped or not) as text columns, lower-cased names."""
     if zipfile.is_zipfile(path):
         with zipfile.ZipFile(path) as zf:
-            name = next(n for n in zf.namelist() if n.lower().endswith((".csv", ".txt")))
-            raw = zf.read(name)
+            raw = zf.read(panel_member(zf))
     else:
         raw = path.read_bytes()
     first = raw.split(b"\n", 1)[0]

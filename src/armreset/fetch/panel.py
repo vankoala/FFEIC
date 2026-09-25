@@ -57,15 +57,26 @@ def filers_path(settings: Settings, year: int) -> Path:
     return panel_dir(settings) / f"filers_{year}.json"
 
 
+def panel_member(zf: zipfile.ZipFile) -> str:
+    """The one panel CSV inside a zip. macOS metadata entries are skipped: the 2022 zip holds
+    ``__MACOSX/._2022_public_panel_csv.csv`` next to the real file."""
+    csvs = [
+        n
+        for n in zf.namelist()
+        if n.lower().endswith((".csv", ".txt"))
+        and not n.startswith("__MACOSX/")
+        and not Path(n).name.startswith("._")
+    ]
+    if len(csvs) != 1:
+        raise PanelError(f"{Path(zf.filename or '').name}: expected one CSV inside, found {csvs}")
+    return csvs[0]
+
+
 def panel_header(path: Path) -> list[str]:
     """Column names of the panel CSV inside the zip (or of a bare CSV)."""
     if zipfile.is_zipfile(path):
-        with zipfile.ZipFile(path) as zf:
-            csvs = [n for n in zf.namelist() if n.lower().endswith((".csv", ".txt"))]
-            if len(csvs) != 1:
-                raise PanelError(f"{path.name}: expected one CSV inside, found {csvs}")
-            with zf.open(csvs[0]) as f:
-                first = io.TextIOWrapper(f, encoding="utf-8", errors="replace").readline()
+        with zipfile.ZipFile(path) as zf, zf.open(panel_member(zf)) as f:
+            first = io.TextIOWrapper(f, encoding="utf-8", errors="replace").readline()
     else:
         with path.open(encoding="utf-8", errors="replace") as f:
             first = f.readline()
@@ -113,24 +124,37 @@ def _fetch_year(
     key = f"{SOURCE}:{year}"
     path = panel_path(settings, year)
     if manifest.is_cached(key):
-        return Outcome(year, "cached", manifest.abspath(manifest.get(key).path))
+        return _checked(Outcome(year, "cached", manifest.abspath(manifest.get(key).path)))
     placed = sorted(panel_dir(settings).glob(f"{year}*panel*"))
     placed = [p for p in placed if not p.name.endswith(".part")]
     if placed:
-        check_panel(placed[0])
+        try:
+            check_panel(placed[0])
+        except PanelError as exc:
+            return Outcome(year, "failed", placed[0], f"{exc}. Not recorded; replace the file.")
         manifest.record(key, SOURCE, placed[0], period=str(year), meta={"origin": "placed by hand"})
         return Outcome(year, "recorded", placed[0], "panel file placed by hand")
     if year in PANEL_YEARS:
         try:
             _download(client, throttle, panel_url(year), path)
-            check_panel(path)
         except Exception as exc:
             log.debug("panel download failed", exc_info=True)
-            path.unlink(missing_ok=True)
             return Outcome(year, "failed", detail=f"{type(exc).__name__}: {exc}")
+        # Record before checking: a file that fails the check is kept, so fixing the check
+        # never means downloading the file again.
         manifest.record(key, SOURCE, path, url=panel_url(year), period=str(year))
-        return Outcome(year, "downloaded", path)
+        return _checked(Outcome(year, "downloaded", path))
     return _names_only(settings, manifest, year, client)
+
+
+def _checked(outcome: Outcome) -> Outcome:
+    """Run the column check on a recorded panel file. A failure is reported, never deleted."""
+    try:
+        check_panel(outcome.path)
+    except PanelError as exc:
+        detail = f"{exc}. The file stays recorded at {outcome.path}; it is not downloaded again."
+        return Outcome(outcome.year, "failed", outcome.path, detail)
+    return outcome
 
 
 def _names_only(settings: Settings, manifest: Manifest, year: int, client: httpx.Client) -> Outcome:

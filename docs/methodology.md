@@ -213,8 +213,8 @@ Link details:
   - `not_in_panel`: in the loan file but not the panel.
   - `no_panel_for_year`
 - **Panel coverage:** the panel is published for 2018–2023 only. For 2024 on, the tool has
-  names without RSSD IDs unless a panel-format file (for example the Philadelphia Fed's
-  HMDA Lender File) is placed by hand.
+  names without RSSD IDs unless a file with the panel's columns is placed by hand.
+  `docs/verification.md` measures the alternatives.
 
 ## Known limitations
 

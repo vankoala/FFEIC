@@ -10,6 +10,8 @@ import pytest
 from armreset.fetch.panel import (
     FILERS_API,
     PANEL_YEARS,
+    PanelError,
+    check_panel,
     fetch_panels,
     panel_url,
 )
@@ -180,3 +182,45 @@ def test_fetch_panels_rejects_a_non_zip(settings: Settings) -> None:
     [outcome] = fetch_panels(settings, Manifest.for_settings(settings), [2021], client=client)
     assert outcome.status == "failed" and "zip" in outcome.detail
     assert not (settings.raw_dir / "hmda_panel" / "2021_public_panel_csv.zip").exists()
+    assert "hmda_panel:2021" not in Manifest.for_settings(settings)
+
+
+def test_panel_zip_with_macos_metadata(tmp_path: Path) -> None:
+    """The real 2022 zip carries an AppleDouble file next to the CSV."""
+    path = tmp_path / "2022_public_panel_csv.zip"
+    with zipfile.ZipFile(path, "w") as zf:
+        zf.writestr("2022_public_panel_csv.csv", panel_csv(PANEL_ROWS))
+        zf.writestr("__MACOSX/._2022_public_panel_csv.csv", b"\x00\x05\x16\x07Mac OS X")
+    assert "lei" in check_panel(path)
+    assert read_panel(path).height == len(PANEL_ROWS)
+
+
+def test_panel_zip_with_two_csvs_is_refused(tmp_path: Path) -> None:
+    path = tmp_path / "panel.zip"
+    with zipfile.ZipFile(path, "w") as zf:
+        zf.writestr("a.csv", panel_csv(PANEL_ROWS))
+        zf.writestr("b.csv", panel_csv(PANEL_ROWS))
+    with pytest.raises(PanelError, match="expected one CSV"):
+        check_panel(path)
+
+
+def test_a_download_that_fails_the_check_is_kept(settings: Settings) -> None:
+    seen: list[str] = []
+    client = httpx.Client(transport=_files_server(seen, _zip("a,b\n1,2\n")))
+    [outcome] = fetch_panels(settings, Manifest.for_settings(settings), [2021], client=client)
+    assert outcome.status == "failed" and "lacks panel columns" in outcome.detail
+    assert outcome.path is not None and outcome.path.exists()
+    assert "hmda_panel:2021" in Manifest.for_settings(settings)
+
+    [again] = fetch_panels(settings, Manifest.for_settings(settings), [2021], client=client)
+    assert again.status == "failed"  # still checked, and still not downloaded again
+    assert len(seen) == 1
+
+
+def test_a_hand_placed_file_that_fails_the_check_is_not_recorded(settings: Settings) -> None:
+    placed = settings.raw_dir / "hmda_panel" / "2024_lender_panel.csv"
+    placed.parent.mkdir(parents=True)
+    placed.write_text("a,b\n1,2\n")
+    [outcome] = fetch_panels(settings, Manifest.for_settings(settings), [2024], client=None)
+    assert outcome.status == "failed" and "replace the file" in outcome.detail
+    assert "hmda_panel:2024" not in Manifest.for_settings(settings)
