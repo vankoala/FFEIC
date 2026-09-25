@@ -71,7 +71,7 @@ def test_missing_config_exits_with_usage_error(tmp_path: Path, monkeypatch) -> N
 # Remove each case as its phase implements the command.
 @pytest.mark.parametrize(
     "args",
-    [["fetch", "hmda"], ["fetch", "panel"], ["app"]],
+    [["app"]],
 )
 def test_unimplemented_commands_fail_loudly(project: Path, args: list[str]) -> None:
     result = runner.invoke(app, args)

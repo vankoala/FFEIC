@@ -10,10 +10,18 @@ import polars as pl
 
 from armreset.settings import Settings
 
-# Views are (re)created by `armtool build` once the tables they read exist. Percent columns
-# are percentage points (8.7 means 8.7%). Bucket amounts are "repricing or maturing",
-# measured from each report date; see docs/methodology.md.
+# Views are (re)created by `armtool build` once the tables and views they read exist, in
+# this order. Percent columns are percentage points (8.7 means 8.7%). Bucket amounts are
+# "repricing or maturing", measured from each report date; see docs/methodology.md.
+# {placeholders} are filled from create_views(params=...); a view whose placeholder has no
+# value is left as it is.
 VIEWS: dict[str, tuple[frozenset[str], str]] = {
+    # stg_hmda stays in Parquet (PLAN.md §6); the view reads it in place.
+    "stg_hmda": (
+        frozenset(),
+        "SELECT * FROM read_parquet('{stg_hmda_glob}', hive_partitioning = false, "
+        "union_by_name = true)",
+    ),
     "v_cdr_industry": (
         frozenset({"fact_cdr_repricing"}),
         """
@@ -96,6 +104,65 @@ VIEWS: dict[str, tuple[frozenset[str], str]] = {
         LEFT JOIN flags q USING (rssd_id, report_date)
         """,
     ),
+    "v_hmda_orig_summary": (
+        frozenset({"stg_hmda", "dim_purchaser_segment"}),
+        """
+        SELECT
+            h.activity_year,
+            h.rate_type,
+            coalesce(s.holder_segment, '{unmapped_segment}') AS holder_segment,
+            h.conforming_loan_limit                         AS conforming,
+            count(*)                                        AS loans,
+            sum(h.loan_amount)                              AS amount
+        FROM stg_hmda h
+        LEFT JOIN dim_purchaser_segment s USING (purchaser_type)
+        GROUP BY ALL
+        """,
+    ),
+    # One row per (activity_year, lei): the panel's RSSD and whether it files a Call Report.
+    "v_bank_hmda_link": (
+        frozenset({"stg_hmda", "dim_hmda_lender", "dim_bank"}),
+        """
+        WITH lar AS (
+            SELECT activity_year, lei,
+                   count(*)                                         AS loans,
+                   sum(loan_amount)                                 AS amount,
+                   count(*) FILTER (WHERE rate_type = 'arm')        AS arm_loans,
+                   sum(loan_amount) FILTER (WHERE rate_type = 'arm') AS arm_amount
+            FROM stg_hmda GROUP BY ALL
+        ),
+        call_reports AS (
+            SELECT rssd_id, year(report_date) AS activity_year,
+                   max(report_date) AS report_date, arg_max(name, report_date) AS name
+            FROM dim_bank GROUP BY ALL
+        )
+        SELECT
+            coalesce(l.activity_year, x.activity_year)      AS activity_year,
+            coalesce(l.lei, x.lei)                          AS lei,
+            l.name,
+            l.lender_type,
+            l.agency_code,
+            l.other_lender_code,
+            l.respondent_rssd,
+            CASE
+                WHEN l.lei IS NULL                  THEN 'not_in_panel'
+                WHEN NOT l.panel_available          THEN 'no_panel_for_year'
+                WHEN l.respondent_rssd IS NULL      THEN 'no_rssd'
+                WHEN c.rssd_id IS NOT NULL          THEN 'matched'
+                ELSE 'rssd_not_a_call_report_filer'
+            END                                             AS match_status,
+            c.name                                          AS call_report_name,
+            c.report_date                                   AS call_report_date,
+            coalesce(x.loans, 0)                            AS loans,
+            coalesce(x.amount, 0)                           AS amount,
+            coalesce(x.arm_loans, 0)                        AS arm_loans,
+            coalesce(x.arm_amount, 0)                       AS arm_amount
+        FROM dim_hmda_lender l
+        FULL JOIN lar x ON x.lei = l.lei AND x.activity_year = l.activity_year
+        LEFT JOIN call_reports c
+               ON c.rssd_id = l.respondent_rssd AND c.activity_year = l.activity_year
+        """,
+    ),
 }
 
 
@@ -129,14 +196,21 @@ def relations(con: duckdb.DuckDBPyConnection) -> list[tuple[str, str]]:
     ).fetchall()
 
 
-def create_views(con: duckdb.DuckDBPyConnection) -> list[str]:
-    """(Re)create every view whose tables exist; returns the names created."""
-    tables = {name for name, kind in relations(con) if kind == "BASE TABLE"}
+def create_views(con: duckdb.DuckDBPyConnection, params: dict[str, str] | None = None) -> list[str]:
+    """(Re)create every view whose inputs exist; returns the names created."""
+    params = {"unmapped_segment": "unmapped", **(params or {})}
+    available = {name for name, _ in relations(con)}
     created = []
-    for name, (needs, sql) in VIEWS.items():
-        if needs <= tables:
-            con.execute(f"CREATE OR REPLACE VIEW {name} AS {sql}")
-            created.append(name)
+    for name, (needs, template) in VIEWS.items():
+        placeholders = set(re.findall(r"\{(\w+)\}", template))
+        if not needs <= available or not placeholders <= params.keys():
+            continue
+        sql = template
+        for key in placeholders:
+            sql = sql.replace("{" + key + "}", params[key].replace("'", "''"))
+        con.execute(f"CREATE OR REPLACE VIEW {name} AS {sql}")
+        available.add(name)
+        created.append(name)
     return created
 
 

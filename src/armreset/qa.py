@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
+from decimal import Decimal
 from pathlib import Path
 
 import duckdb
@@ -92,6 +93,10 @@ def markdown_table(df: pl.DataFrame) -> str:
     def cell(value: object, column: str) -> str:
         if value is None:
             return ""
+        if column == "year":
+            return str(value)
+        if isinstance(value, Decimal):  # DuckDB returns sums of integers as exact decimals
+            value = int(value) if value == value.to_integral_value() else float(value)
         if isinstance(value, float):
             return f"{value:.1%}" if "share" in column or "coverage" in column else f"{value:,.1f}"
         if isinstance(value, int):
@@ -105,6 +110,78 @@ def markdown_table(df: pl.DataFrame) -> str:
         for row in df.iter_rows()
     ]
     return "\n".join([header, rule, *rows])
+
+
+INTRO_BUCKET_SQL = """
+    CASE WHEN intro_m < 12 THEN '01-11' WHEN intro_m = 12 THEN '12'
+         WHEN intro_m < 36 THEN '13-35' WHEN intro_m = 36 THEN '36'
+         WHEN intro_m < 60 THEN '37-59' WHEN intro_m = 60 THEN '60'
+         WHEN intro_m < 84 THEN '61-83' WHEN intro_m = 84 THEN '84'
+         WHEN intro_m < 120 THEN '85-119' WHEN intro_m = 120 THEN '120'
+         WHEN intro_m < 180 THEN '121-179' WHEN intro_m = 180 THEN '180'
+         ELSE '181+' END"""
+
+
+def hmda_year_stats(con: duckdb.DuckDBPyConnection) -> pl.DataFrame:
+    return con.sql(
+        """
+        SELECT activity_year                                     AS year,
+               count(*)                                          AS loans,
+               sum(loan_amount) / 1e9                            AS "amount $bn",
+               count(*) FILTER (WHERE rate_type = 'arm')         AS "ARM loans",
+               avg((rate_type = 'arm')::INT)                     AS "ARM share (loans)",
+               sum(loan_amount) FILTER (WHERE rate_type = 'arm')
+                   / sum(loan_amount)                            AS "ARM share ($)",
+               avg((rate_type = 'unknown')::INT)                 AS "exempt share (loans)",
+               sum(loan_amount) FILTER (WHERE rate_type = 'unknown')
+                   / sum(loan_amount)                            AS "exempt share ($)",
+               count(*) FILTER (WHERE rate_type = 'arm' AND interest_rate IS NULL)
+                                                                 AS "ARMs without a rate"
+        FROM stg_hmda GROUP BY ALL ORDER BY year
+        """
+    ).pl()
+
+
+def hmda_intro_histogram(con: duckdb.DuckDBPyConnection) -> pl.DataFrame:
+    """Share of each year's ARM loans by months to first reset (intro_m)."""
+    long = con.sql(
+        f"""
+        SELECT {INTRO_BUCKET_SQL} AS "intro_m (months)", activity_year::VARCHAR AS year,
+               count(*) / sum(count(*)) OVER (PARTITION BY activity_year) AS share,
+               min(intro_m) AS sort_key
+        FROM stg_hmda WHERE rate_type = 'arm' GROUP BY 1, activity_year
+        """
+    ).pl()
+    order = long.group_by("intro_m (months)").agg(pl.col("sort_key").min())
+    wide = long.pivot(on="year", index="intro_m (months)", values="share")
+    wide = wide.rename({c: f"{c} share" for c in wide.columns if c != "intro_m (months)"})
+    return wide.join(order, on="intro_m (months)").sort("sort_key").drop("sort_key").fill_null(0.0)
+
+
+def hmda_holder_segments(con: duckdb.DuckDBPyConnection) -> pl.DataFrame:
+    return con.sql(
+        """
+        SELECT activity_year AS year, holder_segment AS "holder segment",
+               sum(loans) FILTER (WHERE rate_type = 'arm')        AS "ARM loans",
+               sum(amount) FILTER (WHERE rate_type = 'arm') / 1e9 AS "ARM $bn",
+               sum(loans)                                         AS "all loans"
+        FROM v_hmda_orig_summary GROUP BY ALL ORDER BY year, "ARM $bn" DESC NULLS LAST
+        """
+    ).pl()
+
+
+def hmda_rssd_match(con: duckdb.DuckDBPyConnection) -> pl.DataFrame:
+    return con.sql(
+        """
+        SELECT activity_year AS year, coalesce(lender_type, '(not in panel)') AS "lender type",
+               count(*)                                              AS lenders,
+               count(*) FILTER (WHERE match_status = 'matched')      AS "linked to a Call Report",
+               avg((match_status = 'matched')::INT)                  AS "linked share",
+               sum(loans)                                            AS loans,
+               sum(arm_amount) / 1e9                                 AS "ARM $bn"
+        FROM v_bank_hmda_link WHERE loans > 0 GROUP BY ALL ORDER BY year, loans DESC
+        """
+    ).pl()
 
 
 def report_path(settings: Settings) -> Path:
@@ -158,6 +235,34 @@ def write_report(settings: Settings) -> Path:
             sections += [
                 "",
                 "No Call Report tables yet: run `armtool fetch cdr` and `armtool build`.",
+            ]
+        if {"stg_hmda", "v_hmda_orig_summary", "v_bank_hmda_link"} <= names:
+            sections += [
+                "",
+                "## HMDA",
+                "",
+                "Originated first-lien closed-end loans on 1-4 family dwellings, excluding "
+                "reverse mortgages. ARMs have an intro period shorter than the loan term; "
+                "'exempt' rows come from filers exempt from reporting the intro period.",
+                "",
+                markdown_table(hmda_year_stats(con)),
+                "",
+                "### Months to first reset (share of ARM loans)",
+                "",
+                markdown_table(hmda_intro_histogram(con)),
+                "",
+                "### ARMs by holder segment",
+                "",
+                "Holder at origination: 'retained' means not sold in the origination year.",
+                "",
+                markdown_table(hmda_holder_segments(con)),
+                "",
+                "### Lenders linked to a Call Report filer (RSSD match)",
+                "",
+                "Only banks and savings associations file Call Reports, so credit unions, "
+                "mortgage companies and bank affiliates are expected to be unlinked.",
+                "",
+                markdown_table(hmda_rssd_match(con)),
             ]
     finally:
         con.close()

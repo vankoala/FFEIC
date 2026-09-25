@@ -198,11 +198,39 @@ def fetch_hmda(
     ] = None,
 ) -> None:
     """HMDA LAR CSVs from the Data Browser API, converted to Parquet."""
+    from armreset.fetch.hmda import HmdaFetcher
+
     s = _settings(ctx)
     wanted = _years(years, s.hmda.years)
-    mode = "by state" if (s.hmda.by_state if by_state is None else by_state) else "nationwide"
-    console.print(f"HMDA years requested: {', '.join(map(str, wanted))} ({mode})")
-    _not_implemented("fetch hmda", 3)
+    states = s.hmda.by_state if by_state is None else by_state
+    console.print(
+        f"HMDA years requested: {', '.join(map(str, wanted))} "
+        f"({'by state' if states else 'nationwide'})"
+    )
+    _warn_if_no_contact(s)
+    manifest = Manifest.for_settings(s)
+    outcomes = HmdaFetcher(s, manifest).fetch(wanted, by_state=states)
+    table = Table(title="HMDA LAR files", title_justify="left")
+    for column in ("year", "file", "status", "rows", "download", "seconds", "detail"):
+        table.add_column(column, justify="right" if column in ("rows", "seconds") else "left")
+    for o in outcomes:
+        entry = manifest.get(f"hmda:{o.year}:{o.state or 'nationwide'}")
+        table.add_row(
+            str(o.year),
+            o.state or "nationwide",
+            o.status,
+            f"{o.rows:,}" if o.rows is not None else "-",
+            _human_bytes(entry.bytes) if entry else "-",
+            f"{o.streamed.seconds:,.0f}" if o.streamed else "-",
+            o.detail,
+        )
+    console.print(table)
+    if any(o.status == "failed" for o in outcomes):
+        err_console.print(
+            "HMDA download failed. Re-run later; files already fetched are kept. If the "
+            "nationwide file keeps failing, try `armtool fetch hmda --by-state`."
+        )
+        raise typer.Exit(code=1)
 
 
 @fetch_app.command("panel")
@@ -213,10 +241,24 @@ def fetch_panel(
     ] = None,
 ) -> None:
     """HMDA reporter panel files (lender identity and RSSD link)."""
+    from armreset.fetch.panel import fetch_panels
+
     s = _settings(ctx)
     wanted = _years(years, s.hmda.years)
     console.print(f"HMDA panel years requested: {', '.join(map(str, wanted))}")
-    _not_implemented("fetch panel", 3)
+    _warn_if_no_contact(s)
+    outcomes = fetch_panels(s, Manifest.for_settings(s), wanted)
+    table = Table(title="HMDA reporter panel", title_justify="left")
+    for column in ("year", "status", "file"):
+        table.add_column(column)
+    for o in outcomes:
+        table.add_row(str(o.year), o.status, o.path.name if o.path else "-")
+    console.print(table)
+    for o in outcomes:
+        if o.detail:
+            console.print(f"{o.year}: {o.detail}")
+    if any(o.status == "failed" for o in outcomes):
+        raise typer.Exit(code=1)
 
 
 @app.command()
@@ -239,6 +281,11 @@ def build(
         )
     if summary.reused:
         console.print(f"Staging already current for {len(summary.reused)} file(s)")
+    for year in summary.hmda:
+        state = "already current" if year.reused else "staged"
+        console.print(
+            f"HMDA {year.year}: {year.rows:,} loans {state} (from {', '.join(year.sources)})"
+        )
     for key, reason in summary.unusable.items():
         err_console.print(f"[yellow]{key}: {reason}[/yellow]")
     if not summary.tables:

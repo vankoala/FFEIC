@@ -9,13 +9,25 @@ checks behind them are in `docs/verification.md`.
 | Source | What it measures | Grain |
 |---|---|---|
 | Call Reports (FFIEC 031/041/051) | Bank-held closed-end first-lien 1–4 family loans by remaining maturity (fixed rate) or next repricing date (floating rate) | Bank × quarter, 6 buckets |
-| HMDA LAR | Originations with months until the first rate change (phases 3–4) | Loan × origination year |
+| HMDA LAR | Originations with months until the first rate change | Loan × origination year |
 
 The sources overlap by design:
 - A bank-retained ARM appears in both HMDA and the Call Report.
 - A GSE-sold ARM appears in both HMDA and agency pools.
 
 So the tool never adds numbers across sources.
+
+### No loan is counted twice
+
+Within each source, the tool also makes sure the same loans never appear twice:
+- **Call Report rankings use one quarter.** `v_cdr_bank_latest` holds banks that filed in
+  the latest quarter. A bank that merged or failed drops out, because another filer now
+  reports its loans.
+- **HMDA drops purchased loans.** Only originations (action taken 1) are kept. A loan one
+  lender originates and another buys appears only once, as the origination.
+- **Each HMDA year comes from one source.** It's the nationwide file, or else the full set of
+  state files, never both. A partial set of state files is refused.
+- **Nothing is downloaded twice.** A file recorded in the manifest is never fetched again.
 
 ## Call Report repricing wall
 
@@ -122,6 +134,88 @@ Flags go to `qa_cdr_flags`. Flagged rows stay in the data.
 - **Recorded quarters are not refetched.** To pick up later amendments, delete the
   quarter's zip, staging file and manifest entry, then fetch again.
 
+## HMDA originations
+
+### What is included
+
+- **Data:** the CFPB Data Browser's loan-level file for each year. For 2021 the Data
+  Browser serves the three-year dataset (frozen 2024-12-31, including resubmissions).
+- **Kept:**
+  - originated loans (action taken 1);
+  - first liens;
+  - closed-end loans (open-end lines of credit dropped);
+  - not reverse mortgages;
+  - 1–4 family dwellings, site-built or manufactured.
+- **Where the filters run:** the API accepts at most two filters, so it filters on action
+  taken and lien status, and staging applies the rest.
+- **Loan amounts are the midpoint of a $10k band**, e.g. $305,000 for any amount from
+  $300,000 up to $310,000.
+
+### Fixed, ARM or unknown
+
+`rate_type` comes from `intro_rate_period`, the months until the first rate change:
+- **`arm`:** a positive number of months, shorter than the loan term.
+- **`fixed`:** `NA`, zero, or an intro period at least as long as the term.
+- **`unknown`:** `Exempt`. The lender is exempt from reporting the field (small filers under
+  the 2018 partial exemptions).
+  - These rows are counted and shown separately, never dropped silently.
+  - In 2021 they're 1.8% of loans and 1.4% of dollars.
+
+Two notes on ARMs:
+- **Most first resets come at 5, 7 or 10 years.** In 2021, 120, 84 and 60 months together
+  make up 85% of ARM loans. 180 months (3.4%) is the next largest cluster.
+- **About 1.9% of 2021 ARMs reset after 1 month.** They're mostly interest-only purchase
+  loans from private-banking lenders that adjust monthly from the start.
+
+### Holder at origination
+
+`purchaser_type` maps to a holder segment in `config/segments.yaml`:
+
+| Segment | purchaser_type | Where else these loans show up |
+|---|---|---|
+| retained | 0 (not sold in the origination year) | Call Report buckets |
+| gse | 1, 3 (Fannie Mae, Freddie Mac) | Agency pools (v2) |
+| ginnie | 2 | Agency pools (v2) |
+| private_securitization | 5 | Non-agency RMBS (out of scope) |
+| other | 4, 6, 71, 72, 8, 9 | Unknown holder |
+
+- **Farmer Mac (4) isn't in PLAN.md's table.** It isn't an agency MBS pool, so it's under
+  `other`.
+- **Unlisted codes go to `unmapped`**, and the QA report counts them.
+- **"Retained" means not sold in the origination year.** The loan may have been sold later,
+  so the segment is a proxy for the current holder.
+
+### Lender type and the link to the Call Reports
+
+The HMDA Reporter Panel gives each lender's RSSD ID, regulator (`agency_code`) and
+relationship to a depository (`other_lender_code`). Those codes alone misclassify:
+- Large credit unions report to the CFPB, not NCUA.
+- Code 3 is mostly independent mortgage companies.
+
+So `lender_type` is set by rules in `config/segments.yaml`, first match wins:
+1. **bank:** its RSSD files a Call Report that year. Banks and savings associations file
+   Call Reports.
+2. **credit_union:** regulator NCUA, or "credit union" in the name, or a CFPB-supervised
+   depository that files no Call Report.
+3. **bank_affiliate:** a mortgage subsidiary or affiliate of a depository (code 1, 2 or 5).
+4. **independent_mortgage_company:** code 3, or regulator HUD, or a CFPB-supervised
+   non-depository.
+5. **bank:** regulator OCC, Fed or FDIC with no Call Report match that year.
+6. **unknown:** anything else.
+
+Link details:
+- **Rules that need the Call Report link never fire for a year with no Call Reports
+  loaded.** Those lenders stay `unknown` rather than being guessed.
+- **`v_bank_hmda_link` gives each lender's match status:**
+  - `matched`: the RSSD filed a Call Report that year.
+  - `rssd_not_a_call_report_filer`: most credit unions and nonbanks.
+  - `no_rssd`
+  - `not_in_panel`: in the loan file but not the panel.
+  - `no_panel_for_year`
+- **Panel coverage:** the panel is published for 2018–2023 only. For 2024 on, the tool has
+  names without RSSD IDs unless a panel-format file (for example the Philadelphia Fed's
+  HMDA Lender File) is placed by hand.
+
 ## Known limitations
 
 ### Call Reports
@@ -131,9 +225,21 @@ Flags go to `qa_cdr_flags`. Flagged rows stay in the data.
   only at a few 031 filers, are excluded.
 - **Credit unions are absent from the Call Report layer.**
 
+### HMDA
+- **Covers originations only;** balances at reset are modeled (phase 4).
+- **No origination month**, only the year.
+- **Interest-only length is unknown.** A small number of loans have an exempt
+  interest-only flag but a reported intro period; they count as not interest-only.
+- **Pre-2018 cohorts are missing:** the intro-period field starts in 2018.
+- **Small filers are exempt from the intro-period field** (`unknown`), and lenders below
+  the HMDA reporting thresholds are absent.
+- **"Retained in origination year" is not the same as "held today".**
+- **No panel for 2024 on**, so no RSSD link for those years unless one is supplied.
+- **Vintages differ.** The 2021 loan file is the three-year vintage while the panel is the
+  Snapshot, so 42 late filers (0.3% of loans) aren't in the panel.
+
 ### Across sources
 - **The sources overlap by design**, so the tool shows them side by side and never sums
   them.
 
-The HMDA sections (first-reset calendar, holder segments, coverage matrix, cross-checks)
-are added in phases 3–4.
+The first-reset calendar, the coverage matrix and the cross-checks are added in phase 4.

@@ -35,17 +35,42 @@ holder_segments:
 unmapped_segment: unmapped
 
 # HMDA panel -> lender_type (PLAN.md §5.3). First matching rule wins; raw codes are kept
-# alongside the mapped value in dim_hmda_lender.
-# VERIFY (Phase 3): confirm agency_code / other_lender_code labels against the panel
-# data dictionary before relying on this mapping.
+# alongside the mapped value in dim_hmda_lender. Conditions: in_call_reports (the RSSD files
+# a Call Report that year; a rule on it never matches when Call Reports for the year aren't
+# loaded), agency_code, other_lender_code, name_pattern (case-insensitive).
+#
+# VERIFY result (docs/verification.md, item 7), from the 2021 panel. The panel codes alone
+# misclassify:
+#   - other_lender_code 3 is labelled "independent mortgage banking subsidiary", but 867 of
+#     its 938 lenders report to HUD (agency 7) and are independent mortgage companies.
+#   - other_lender_code -1 (blank) mixes banks, credit unions and mortgage companies.
+#   - Large credit unions report to the CFPB (agency 9), not NCUA (agency 5): Navy Federal,
+#     PenFed, Boeing Employees, Star One.
+# So the Call Report link comes first, and the codes decide the rest.
 #   agency_code: 1 OCC, 2 FRS, 3 FDIC, 5 NCUA, 7 HUD, 9 CFPB
-#   other_lender_code: 0 depository institution; 1, 2, 3, 5 affiliates or mortgage
-#   banking subsidiaries; -1 null
+#   other_lender_code: 0 depository, 1 MBS of state member bank, 2 MBS of bank holding
+#   company, 3 independent mortgage banking subsidiary, 5 affiliate of a depository, -1 blank
 lender_type_rules:
+  - lender_type: bank                 # banks and savings associations file Call Reports
+    in_call_reports: true
   - lender_type: credit_union
     agency_code: [5]
-  - lender_type: depository
+  - lender_type: credit_union         # large credit unions supervised by the CFPB
+    name_pattern: "credit union"
+  - lender_type: credit_union         # a CFPB-supervised depository with no Call Report is
+    agency_code: [9]                  # a credit union, e.g. "STATE EMPLOYEES'", "THE GOLDEN 1"
     other_lender_code: [0]
-  - lender_type: depository_affiliate
-    other_lender_code: [1, 2, 3, 5]
-  - lender_type: other
+    in_call_reports: false
+  - lender_type: bank_affiliate       # mortgage subsidiaries and affiliates of depositories
+    other_lender_code: [1, 2, 5]
+  - lender_type: independent_mortgage_company
+    other_lender_code: [3]
+  - lender_type: independent_mortgage_company
+    agency_code: [7]
+  - lender_type: independent_mortgage_company   # CFPB-supervised non-depositories
+    agency_code: [9]
+    other_lender_code: [-1]
+    in_call_reports: false
+  - lender_type: bank                 # bank regulators, but no Call Report match that year
+    agency_code: [1, 2, 3]
+  - lender_type: unknown

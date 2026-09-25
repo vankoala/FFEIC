@@ -52,10 +52,74 @@ One row per flag raised on a bank-quarter. The flag rules are in `docs/methodolo
 | `flag` | VARCHAR | Flag name |
 | `detail` | VARCHAR | The values behind the flag, e.g. `first_lien_total=…; sum_buckets=…` |
 
+### `dim_hmda_lender`
+
+One row per `(activity_year, lei)`, from the HMDA Reporter Panel. For years without a panel
+(2024 on), the rows come from the Data Browser filers list, with names only.
+
+| Column | Type | Notes |
+|---|---|---|
+| `activity_year`, `lei` | INTEGER, VARCHAR | Key |
+| `name` | VARCHAR | Respondent name |
+| `respondent_rssd`, `parent_rssd`, `top_holder_rssd` | BIGINT | NIC RSSD IDs; null where the panel has −1 |
+| `agency_code` | BIGINT | 1 OCC, 2 FRS, 3 FDIC, 5 NCUA, 7 HUD, 9 CFPB |
+| `other_lender_code` | BIGINT | 0 depository, 1 MBS of state member bank, 2 MBS of BHC, 3 "independent mortgage banking subsidiary", 5 affiliate of a depository, −1 blank |
+| `assets` | BIGINT | As the panel reports it; null where −1 |
+| `state`, `city` | VARCHAR | Headquarters |
+| `in_call_reports` | BOOLEAN | The RSSD filed a Call Report that year; null when no Call Reports are loaded for the year |
+| `lender_type` | VARCHAR | `bank`, `credit_union`, `bank_affiliate`, `independent_mortgage_company` or `unknown`; rules in `config/segments.yaml` |
+| `panel_available` | BOOLEAN | False for names-only years |
+
+### `dim_purchaser_segment`
+
+HMDA `purchaser_type` → holder segment, from `config/segments.yaml`.
+
+| Column | Notes |
+|---|---|
+| `purchaser_type` | HMDA code |
+| `holder_segment` | `retained`, `gse`, `ginnie`, `private_securitization` or `other` |
+| `holder_label` | Readable label |
+| `overlaps_with` | Where else these loans show up (Call Report buckets, agency pools, ...) |
+
 ## Views
 
-The SQL console lists these. HMDA views (`v_hmda_orig_summary`, `v_reset_calendar`,
-`v_bank_hmda_link`) arrive in phases 3–4.
+The SQL console lists these. `v_reset_calendar` arrives in phase 4.
+
+### `stg_hmda`
+
+HMDA originations, read in place from `data/staging/hmda/activity_year=YYYY/*.parquet` (PLAN.md
+§6 keeps them in Parquet). One row per loan: originated, first lien, closed-end, not a reverse
+mortgage, 1–4 family dwelling.
+
+| Column | Notes |
+|---|---|
+| `activity_year`, `lei`, `state_code`, `msa_md` | Year of action, lender, location |
+| `conforming_loan_limit` | `C` conforming, `NC` jumbo, `U` undetermined |
+| `dwelling_category` | Site-built or manufactured 1–4 family |
+| `purchaser_type`, `loan_type`, `loan_purpose`, `occupancy_type` | HMDA codes |
+| `loan_amount` | USD, midpoint of a $10k band |
+| `interest_rate` | Note rate in percent; null for `NA` or `Exempt` |
+| `loan_term_m` | Term in months |
+| `intro_raw`, `intro_m` | `intro_rate_period` as filed, and as months |
+| `is_io` | Interest-only payments reported |
+| `rate_type` | `arm`, `fixed` or `unknown` (exempt) |
+| `source_key` | Manifest key of the raw file the row came from |
+
+### `v_hmda_orig_summary`
+
+Loan counts and dollars by `activity_year` × `rate_type` × `holder_segment` × `conforming`
+(`conforming_loan_limit`). Columns: `loans`, `amount` (USD).
+
+### `v_bank_hmda_link`
+
+One row per `(activity_year, lei)` from the panel or the loan file.
+
+| Column | Notes |
+|---|---|
+| `activity_year`, `lei`, `name`, `lender_type`, `agency_code`, `other_lender_code`, `respondent_rssd` | From `dim_hmda_lender` |
+| `match_status` | `matched`, `rssd_not_a_call_report_filer`, `no_rssd`, `not_in_panel` or `no_panel_for_year` |
+| `call_report_name`, `call_report_date` | The matched filer's name and its latest report date that year |
+| `loans`, `amount`, `arm_loans`, `arm_amount` | The lender's originations that year in `stg_hmda` |
 
 ### `v_cdr_industry`
 

@@ -17,14 +17,125 @@ Status key:
 | 2 | RCFD vs RCON columns for 5367, 2170 and A564–A569 by form type | phases 1–2 | **adjusted**: 5367 and the buckets use RCON only; same columns in all 34 quarters |
 | 3 | Whether FFIEC 051 filers report RC-C Memo item 2.a | phases 1–2 | **confirmed**: all do, in all 34 quarters; coverage 100% |
 | 4 | `ffiec-data-collector` against the current CDR page | phases 0–1 | **confirmed**, with our session swapped in |
-| 5 | HMDA nationwide CSV: size, run time, redirects, multi-value `dwelling_categories` | phase 3 | open |
-| 6 | `intro_rate_period` for fixed-rate (`NA`) and exempt (`Exempt` vs `1111`) rows | phase 3 | open |
-| 7 | Panel download path; `agency_code` / `other_lender_code` → `lender_type` | phase 3 | open; names-only fallback confirmed |
-| 8 | Public `loan_amount` is the $10k-band midpoint | phase 3 | open |
+| 5 | HMDA nationwide CSV: size, run time, redirects, multi-value `dwelling_categories` | phase 3 | **adjusted**: the API takes at most two filters; the dwelling filter moved to staging |
+| 6 | `intro_rate_period` for fixed-rate (`NA`) and exempt (`Exempt` vs `1111`) rows | phase 3 | **confirmed**: `NA` and `Exempt`; `1111` never appears in this field |
+| 7 | Panel download path; `agency_code` / `other_lender_code` → `lender_type` | phase 3 | **adjusted**: panel exists for 2018–2023 only; lender type needs the Call Report link |
+| 8 | Public `loan_amount` is the $10k-band midpoint | phase 3 | **confirmed** on all 14,154,790 rows |
 | §5.1 | A567–A569 descriptions match the bucket labels | phase 1 | **confirmed** on the form; the bulk label for A568 is wrong |
 | §5.1 | The buckets plus nonaccrual equal the first-lien total | phases 1–2 | **confirmed** for all 166,554 bank-quarters; checked on every build |
-| §5.2 | `intro_m` histogram clusters near 12, 36, 60, 84 and 120 | phase 3 | open |
+| §5.2 | `intro_m` histogram clusters near 12, 36, 60, 84 and 120 | phase 3 | **confirmed** for 36–120; 180 and 1 month are also real clusters |
 | §11 | One large bank's six buckets match its Call Report PDF | phase 1 | **passed**: JPMorgan Chase Bank, 2026-06-30 |
+
+## Phase 3 (2026-09-25): HMDA 2021 and the 2021 panel
+
+### Item 5: the nationwide CSV (adjusted)
+
+- **The plan's three filters are refused.** A trial on Vermont 2021 with
+  `actions_taken`, `lien_statuses` and `dwelling_categories` returned 400, with the body
+  `{"errorType":"provide-two-or-less-filter-criteria"}`.
+  - The API takes at most two filter criteria, so whether it accepts the multi-value dwelling
+    filter is moot.
+  - **Change:** the download keeps `actions_taken=1` and `lien_statuses=1`. The 1–4 family
+    dwelling filter (site-built and manufactured) moved to the staging `WHERE` clause.
+  - That adds only the multifamily loans to the download (62,800 rows in 2021), and staging
+    drops them.
+- **The API redirects to a pre-built file.**
+  - `/view/nationwide/csv` answers 301 to
+    `files.ffiec.cfpb.gov/data-browser/datasets/2021/filtered-queries/three-year/<hash>.csv`.
+    That file was last modified 2026-01-13.
+  - **For 2021 the Data Browser serves the three-year dataset** (frozen 2024-12-31, which
+    includes resubmissions), not the Snapshot.
+  - The fetcher follows the redirect and throttles both hops.
+- **Size and time, nationwide 2021:**
+  - 5,478,739,820 bytes and 14,154,790 rows, in 207.5 s (about 26 MB/s).
+  - Converted to a 605 MB Parquet file (every column as text). The CSV was then deleted.
+  - Vermont alone: 9.3 MB, 23,930 rows, in 7 s.
+- **Staging keeps 13,772,373 rows.** It drops open-end lines (306,275 rows), reverse
+  mortgages (58,868) and multifamily loans (62,800). The three groups overlap.
+- **Every row is `action_taken` 1 and `lien_status` 1**, so the source filters worked.
+
+### Item 6: `intro_rate_period` values (confirmed)
+
+- **Non-integer values, all 14,154,790 rows:** `NA` 13,203,043 (fixed rate) and `Exempt`
+  258,856 (filers exempt from the field).
+- **`1111` never appears in this field.** Exempt filers put `1111` in the coded fields
+  instead, e.g. `interest_only_payment` (267,069 rows).
+  - The plan's `CASE` checks for both, which is harmless.
+  - For 8,640 rows, `interest_only_payment` is exempt but `intro_rate_period` isn't. Those
+    loans count as not interest-only.
+- **Some integers carry leading zeros** (`00120`, `00360`). `TRY_CAST` reads them correctly.
+- **Months to first reset, 2021 ARMs (share of loans):**
+
+  | Months | Share |
+  |---|---|
+  | 120 | 29.5% |
+  | 84 | 28.8% |
+  | 60 | 27.0% |
+  | 180 | 3.4% |
+  | 36 | 3.1% |
+  | 1 | 1.9% |
+  | 12 | 1.2% |
+
+  - The plan's expected clusters at 36, 60, 84 and 120 hold. 12 months is small.
+  - **180 months is a real cluster** that the plan didn't list.
+  - **1 month is also real.** 7,287 loans, mostly interest-only purchase loans averaging
+    $645k, led by Goldman Sachs Bank USA (1,477) and BBVA (617). These look like
+    private-bank ARMs that adjust monthly from the start.
+
+### Item 7: the Reporter Panel (adjusted)
+
+- **Download path.**
+  - The Snapshot page is a JavaScript app, as the plan says.
+  - Its data-publication script lists the panel at
+    `https://files.ffiec.cfpb.gov/static-data/snapshot/{year}/{year}_public_panel_csv.zip`
+    for **2018–2023**.
+  - For **2024 and 2025** it says "The Reporter Panel is no longer being produced" and
+    points to the Philadelphia Fed's HMDA Lender File.
+  - Finding this took four requests to ffiec.cfpb.gov: the page, the main script, a wrong
+    chunk, and the data-publication chunk.
+- **For years without a panel**, the fetcher saves the names-only filers list (§5.3
+  fallback). It also accepts a panel-format file placed by hand, e.g. from the Philadelphia
+  Fed.
+- **The 2021 panel:** 221 KB, 4,333 lenders, no repeated LEIs. The file spells two columns
+  `topholder_rssd` and `topholder_name`; the data dictionary shows `top_holder_*`. The
+  ingest accepts both.
+- **Labels:** the data dictionary's labels for `agency_code` and `other_lender_code` are as
+  the plan listed.
+- **The codes don't classify lenders reliably on their own:**
+  - **`other_lender_code` 3** ("independent mortgage banking subsidiary") covers 938
+    lenders. 867 of them report to HUD (agency 7) and are independent mortgage companies,
+    PennyMac among them. The plan grouped code 3 with bank affiliates.
+  - **`other_lender_code` −1** (blank) mixes banks (Fifth Third, SouthState), credit
+    unions (Navy Federal) and mortgage companies.
+  - **Large credit unions report to the CFPB (agency 9), not NCUA (agency 5):** Navy
+    Federal, PenFed, Boeing Employees, Star One, "STATE EMPLOYEES'" (SECU) and "THE
+    GOLDEN 1". This confirms the phase 0 hypothesis. `agency_code = 5` alone would miss
+    them.
+- **Change:** `config/segments.yaml` rules lead with the Call Report link. "Files a Call
+  Report that year" means bank, and the codes decide the rest.
+  - The rules include "a CFPB-supervised depository with no Call Report is a credit union".
+  - A rule on the Call Report link never fires when no Call Reports are loaded for the
+    year. Those lenders fall to `unknown` rather than being guessed.
+- **2021 result:** 1,935 banks, 1,381 credit unions, 953 independent mortgage companies,
+  64 bank affiliates and 0 unknown.
+- **RSSD link:**
+  - 1,910 of the 1,932 lenders typed as banks (98.9%) match a Call Report filer.
+  - Credit unions, mortgage companies and bank affiliates don't file Call Reports, so
+    they're unlinked by design.
+  - Lenders linked to a Call Report originated 81.2% of 2021 ARM dollars.
+  - 42 LEIs in the LAR (0.3% of loans) are missing from the panel. The LAR is the
+    three-year vintage and the panel is the Snapshot, so late filers are missing.
+
+### Item 8: `loan_amount` (confirmed)
+
+All 14,154,790 rows have `loan_amount` ending in 5,000, the midpoint of a $10k band.
+
+### Phase 0 plan gaps, now checked
+
+- **purchaser_type 4 (Farmer Mac) is real:** 490 loans in 2021, one of them an ARM. They're
+  mapped to `other`.
+- **No other purchaser code appears.** The QA report counts any `unmapped` rows.
+- **Credit unions at agency 9:** confirmed (see item 7).
 
 ## Phase 2 (2026-09-25): Call Report history, 2018Q1–2026Q2
 

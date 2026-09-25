@@ -35,6 +35,8 @@ at a different config file.
 
 ```bash
 uv run armtool fetch cdr                               # Call Report bulk zips, 2018Q1 to latest
+uv run armtool fetch hmda --years 2021                 # HMDA loans (about 5 GB per year, as CSV)
+uv run armtool fetch panel --years 2021                # HMDA lender panel (2018-2023 only)
 uv run armtool build                                   # staging Parquet, DuckDB tables and views
 uv run armtool validate                                # data/qa_report.md
 uv run armtool status                                  # downloads, as-of dates, tables
@@ -54,8 +56,8 @@ the CDR bulk-data page into `data/raw/cdr/` and run `fetch cdr` again to record 
 | 0 | Scaffold, config, settings, manifest, test harness | done |
 | 1 | CDR fetch and ingest, latest quarter | done |
 | 2 | CDR history, `dim_bank`, CDR views | done |
-| 3 | HMDA 2021 and panel | next |
-| 4 | HMDA all years, reset calendar, coverage matrix | |
+| 3 | HMDA 2021 and panel | done |
+| 4 | HMDA all years, reset calendar, coverage matrix | next |
 | 5 | Streamlit pages | |
 | 6 | SQL console, optional NL-to-SQL | |
 | 7 | Bloomberg import contract (optional) | |
