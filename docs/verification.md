@@ -13,18 +13,64 @@ Status key:
 
 | # | Item (PLAN.md §13 unless noted) | Checked in | Status |
 |---|---|---|---|
-| 1 | CDR zip names, schedule regex, header and description rows, multi-part split, encoding | phase 1 | **adjusted**: regex, POR header, trailing tab |
-| 2 | RCFD vs RCON columns for 5367, 2170 and A564–A569 by form type | phase 1 | **adjusted**: 5367 and the buckets use RCON only |
-| 3 | Whether FFIEC 051 filers report RC-C Memo item 2.a | phase 1 | **confirmed**: all do; coverage 100% |
+| 1 | CDR zip names, schedule regex, header and description rows, multi-part split, encoding | phases 1–2 | **adjusted**: regex, POR header, trailing tab; holds for all 34 quarters |
+| 2 | RCFD vs RCON columns for 5367, 2170 and A564–A569 by form type | phases 1–2 | **adjusted**: 5367 and the buckets use RCON only; same columns in all 34 quarters |
+| 3 | Whether FFIEC 051 filers report RC-C Memo item 2.a | phases 1–2 | **confirmed**: all do, in all 34 quarters; coverage 100% |
 | 4 | `ffiec-data-collector` against the current CDR page | phases 0–1 | **confirmed**, with our session swapped in |
 | 5 | HMDA nationwide CSV: size, run time, redirects, multi-value `dwelling_categories` | phase 3 | open |
 | 6 | `intro_rate_period` for fixed-rate (`NA`) and exempt (`Exempt` vs `1111`) rows | phase 3 | open |
 | 7 | Panel download path; `agency_code` / `other_lender_code` → `lender_type` | phase 3 | open; names-only fallback confirmed |
 | 8 | Public `loan_amount` is the $10k-band midpoint | phase 3 | open |
 | §5.1 | A567–A569 descriptions match the bucket labels | phase 1 | **confirmed** on the form; the bulk label for A568 is wrong |
-| §5.1 | The buckets plus nonaccrual equal the first-lien total | phase 1 | **confirmed** for every bank; now checked on every build |
+| §5.1 | The buckets plus nonaccrual equal the first-lien total | phases 1–2 | **confirmed** for all 166,554 bank-quarters; checked on every build |
 | §5.2 | `intro_m` histogram clusters near 12, 36, 60, 84 and 120 | phase 3 | open |
 | §11 | One large bank's six buckets match its Call Report PDF | phase 1 | **passed**: JPMorgan Chase Bank, 2026-06-30 |
+
+## Phase 2 (2026-09-25): Call Report history, 2018Q1–2026Q2
+
+### Download
+
+- **27 quarters downloaded:** 2019Q3–2026Q1.
+- **110 requests in 9 min 21 s:** two to list CDR's periods, then four per quarter, each at
+  least 5 s apart.
+- **The 7 quarters already in the manifest were skipped**, with no requests.
+- **Zip sizes:** 5.2–7.9 MB each, 34 zips in all.
+- **CDR's "Call Updated" date was 2026-09-15 throughout.**
+
+### Layout, re-checked on every zip
+
+| Check | 34 quarters |
+|---|---|
+| Every data file matches the corrected member-name regex | yes; 48–51 files per zip |
+| RC-C Part I (`RCCI`) in one file | yes, every quarter |
+| RC-C Part I columns (5367 and A564–A569, both prefixes) the same as 2026Q2 | yes |
+| Non-ASCII bytes | none |
+| Columns with data among the 18 staged variants | the same 11 in every quarter: RCFD2170, RCON2170, RCFD5367, RCON5367, RCONA564–A569, RCONC229 |
+
+- **RC-N (past-due and nonaccrual) is split into parts in 2018Q1–2023Q4**, and whole from
+  2024Q1. The plan expected splits in RC-C Part I. They occur instead in RC-N, the schedule
+  that supplies reported nonaccrual.
+- **The split changes nothing.** The parts are joined on IDRSSD, and every bank-quarter
+  still reconciles (below).
+- **Other schedules are split in every quarter:** RCB, RCL, RCO, RCQ, RCRII and RCT.
+- **CDR rebuilds older bulk files as amendments arrive.** The Readme timestamps show it:
+  2018Q1–2020Q4 files were last rebuilt between 2024-04-15 and 2026-08-15, and 2021Q1 on
+  2026-01-15. From 2021Q2 on, all were rebuilt on 2026-09-15.
+
+### Reconciliation across the history
+
+- **Every bank-quarter reconciles.** All 166,554 bank-quarters reconcile implied nonaccrual
+  to reported nonaccrual (RCONC229) within $5k, 118,736 of them exactly. The industry totals
+  over all quarters are $636.706bn implied vs $636.703bn reported.
+- **Flags over the whole history:**
+  - 7,119 rounding-level negative gaps (−$5k to $0).
+  - 166 bank-quarters with implied nonaccrual above 25% of first-lien.
+  - Nothing else: no mismatches, no negative gaps beyond rounding, no missing or partial
+    buckets, and no non-numeric values.
+- **Filers by form:** 2,735 FFIEC 031 bank-quarters (all using RCFD2170 for total assets),
+  42,716 FFIEC 041 and 121,103 FFIEC 051.
+- **Coverage:** every 051 filer reports all six buckets in every quarter, so bucket coverage
+  is 100% of first-lien balances throughout.
 
 ## Phase 1 (2026-09-24): Call Report bulk files
 
