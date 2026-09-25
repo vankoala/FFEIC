@@ -9,9 +9,10 @@ them side by side, never summed:
 - **HMDA LAR** (CFPB Data Browser API): originations with months until the first rate
   change, rolled forward into a first-reset calendar.
 
-`PLAN.md` is the build plan. `docs/verification.md` records what was checked against real
-files, `docs/methodology.md` states every assumption, and `docs/data_dictionary.md`
-describes the tables.
+`PLAN.md` is the build plan and `docs/progress.md` tracks where it stands.
+`docs/verification.md` records what was checked against real files, `docs/methodology.md`
+states every assumption, and `docs/data_dictionary.md` describes the tables. `CLAUDE.md` holds
+the working rules for Claude Code sessions.
 
 ## Setup
 
