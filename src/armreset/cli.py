@@ -240,7 +240,7 @@ def fetch_panel(
         str | None, typer.Option(help="Years, e.g. 2018-2025. Default: hmda.years.")
     ] = None,
 ) -> None:
-    """HMDA reporter panel files (lender identity and RSSD link)."""
+    """CFPB Reporter Panel (2018-2023) and filers lists: a cross-check on the Lender File."""
     from armreset.fetch.panel import fetch_panels
 
     s = _settings(ctx)
@@ -258,6 +258,24 @@ def fetch_panel(
         if o.detail:
             console.print(f"{o.year}: {o.detail}")
     if any(o.status == "failed" for o in outcomes):
+        raise typer.Exit(code=1)
+
+
+@fetch_app.command("lenders")
+def fetch_lenders(ctx: typer.Context) -> None:
+    """Philadelphia Fed HMDA Lender File: lender identity, type and RSSD link, 2018 on."""
+    from armreset.fetch.lenders import PAGE_URL, fetch_lender_file, lender_dir
+
+    s = _settings(ctx)
+    _warn_if_no_contact(s)
+    outcome = fetch_lender_file(s, Manifest.for_settings(s))
+    shown = _relative(outcome.path, s.root) if outcome.path else "-"
+    console.print(f"HMDA Lender File: {outcome.status} ({shown}); {outcome.detail}")
+    if outcome.status == "failed":
+        err_console.print(
+            f"To fetch it by hand, save the .xlsx from {PAGE_URL} into "
+            f"{_relative(lender_dir(s), s.root)}/ and run this command again."
+        )
         raise typer.Exit(code=1)
 
 

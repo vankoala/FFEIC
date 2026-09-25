@@ -27,6 +27,8 @@ Within each source, the tool also makes sure the same loans never appear twice:
   lender originates and another buys appears only once, as the origination.
 - **Each HMDA year comes from one source.** It's the nationwide file, or else the full set of
   state files, never both. A partial set of state files is refused.
+- **Each lender-year comes from one source:** the Philadelphia Fed HMDA Lender File, with one
+  row per lender and year. The CFPB's lender lists are only a cross-check.
 - **Nothing is downloaded twice.** A file recorded in the manifest is never fetched again.
 
 ## Call Report repricing wall
@@ -187,34 +189,42 @@ Two notes on ARMs:
 
 ### Lender type and the link to the Call Reports
 
-The HMDA Reporter Panel gives each lender's RSSD ID, regulator (`agency_code`) and
-relationship to a depository (`other_lender_code`). Those codes alone misclassify:
-- Large credit unions report to the CFPB, not NCUA.
-- Code 3 is mostly independent mortgage companies.
+**Source:** the Philadelphia Fed's HMDA Lender File (`armtool fetch lenders`).
+- One workbook covers every HMDA filer from 2018 to 2025, one row per lender and year.
+- It gives each lender's RSSD ID, its parent's and its high holder's, its regulator
+  (`agency_code`), and an institution type (`institution_type`) from the Fed's National
+  Information Center.
+- It replaced the CFPB Reporter Panel, which stops at 2023. The panel's codes also needed a
+  chain of rules to classify lenders.
 
-So `lender_type` is set by rules in `config/segments.yaml`, first match wins:
-1. **bank:** its RSSD files a Call Report that year. Banks and savings associations file
-   Call Reports.
-2. **credit_union:** regulator NCUA, or "credit union" in the name, or a CFPB-supervised
-   depository that files no Call Report.
-3. **bank_affiliate:** a mortgage subsidiary or affiliate of a depository (code 1, 2 or 5).
-4. **independent_mortgage_company:** code 3, or regulator HUD, or a CFPB-supervised
-   non-depository.
-5. **bank:** regulator OCC, Fed or FDIC with no Call Report match that year.
-6. **unknown:** anything else.
+**`lender_type`** maps the institution type in `config/segments.yaml`:
 
-Link details:
-- **Rules that need the Call Report link never fire for a year with no Call Reports
-  loaded.** Those lenders stay `unknown` rather than being guessed.
+| lender_type | Institution types |
+|---|---|
+| bank | Commercial banks; savings banks, S&Ls, industrial and cooperative banks; US branches of foreign banks; failed banks and thrifts |
+| bank_affiliate | Subsidiaries of banks, thrifts and their holding companies; independent mortgage banks affiliated with a depository |
+| credit_union | Credit unions, their subsidiaries and service organizations |
+| independent_mortgage_company | Independent mortgage banks |
+
+- **One override:** a lender whose RSSD files a Call Report that year is a `bank`, whatever
+  its type code. Only banks and savings associations file Call Reports.
+  - This retypes 21 lender-years in 2018–2025, mostly small banks the file codes as credit
+    unions.
+- **A lender with no Call Report loaded for its year** keeps the type from its code.
+- **Credit union subsidiaries and service organizations count as credit unions.** They are
+  owned by credit unions, which file NCUA reports, not Call Reports.
+
+**Link details:**
 - **`v_bank_hmda_link` gives each lender's match status:**
   - `matched`: the RSSD filed a Call Report that year.
   - `rssd_not_a_call_report_filer`: most credit unions and nonbanks.
   - `no_rssd`
-  - `not_in_panel`: in the loan file but not the panel.
-  - `no_panel_for_year`
-- **Panel coverage:** the panel is published for 2018–2023 only. For 2024 on, the tool has
-  names without RSSD IDs unless a file with the panel's columns is placed by hand.
-  `docs/verification.md` measures the alternatives.
+  - `not_in_lender_file`: in the loan file but not the Lender File for that year.
+  - `no_lender_file_for_year`: the Lender File doesn't cover the year yet.
+- **A bank can be unlinked for a year.** Examples: a bank absorbed early in the year, or a US
+  branch of a foreign bank, which files FFIEC 002 instead. The QA report counts these.
+- **In 2021, every lender typed `bank` is linked.** Linked lenders originated 81% of that
+  year's ARM dollars.
 
 ## Known limitations
 
@@ -234,9 +244,11 @@ Link details:
 - **Small filers are exempt from the intro-period field** (`unknown`), and lenders below
   the HMDA reporting thresholds are absent.
 - **"Retained in origination year" is not the same as "held today".**
-- **No panel for 2024 on**, so no RSSD link for those years unless one is supplied.
-- **Vintages differ.** The 2021 loan file is the three-year vintage while the panel is the
-  Snapshot, so 42 late filers (0.3% of loans) aren't in the panel.
+- **Lender names are cut at 30 characters**, as the Lender File stores them (e.g.
+  "LIBERTYVILLE BANK & TRUST COMP"). Matched banks also show their Call Report name.
+- **The Lender File is updated each July** when a year is added, at the same address. A
+  recorded copy is never downloaded again; to pick up a new release, delete the file and its
+  manifest entry, then run `armtool fetch lenders`.
 
 ### Across sources
 - **The sources overlap by design**, so the tool shows them side by side and never sums

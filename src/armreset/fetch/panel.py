@@ -1,11 +1,12 @@
-"""HMDA Reporter Panel: lender identity and the LEI -> RSSD link (PLAN.md §5.3).
+"""HMDA Reporter Panel and Data Browser filers lists (PLAN.md §5.3).
 
-VERIFY result (docs/verification.md, item 7): the Snapshot page is a JavaScript app, but its
+These CFPB lists are a cross-check: the lender source is the Philadelphia Fed HMDA Lender
+File (``fetch/lenders.py``; docs/verification.md, "Lender source"). VERIFY result
+(docs/verification.md, item 7): the Snapshot page is a JavaScript app, but its
 data-publication code lists the panel files on ``files.ffiec.cfpb.gov`` for 2018-2023. For
-2024 and later it says "The Reporter Panel is no longer being produced" and points to the
-Philadelphia Fed's HMDA Lender File. For those years the fetcher saves the names-only filers
-list from the Data Browser API, and a panel file placed by hand in ``data/raw/hmda_panel/``
-is recorded like a download.
+2024 and later it says "The Reporter Panel is no longer being produced". For those years the
+fetcher saves the Data Browser filers list instead. A panel file placed by hand in
+``data/raw/hmda_panel/`` is recorded like a download.
 """
 
 from __future__ import annotations
@@ -30,10 +31,6 @@ FILERS_SOURCE = "hmda_filers"
 FILE_SERVER = "https://files.ffiec.cfpb.gov"
 FILERS_API = "https://ffiec.cfpb.gov/v2/data-browser-api/view/filers"
 PANEL_YEARS = range(2018, 2024)  # Snapshot panel files listed by the Data Publication site
-LENDER_FILE_URL = (
-    "https://www.philadelphiafed.org/surveys-and-data/consumer-finance-data/"
-    "home-mortgage-disclosure-act-lender-file"
-)
 REQUIRED_COLUMNS = ("lei", "respondent_rssd", "agency_code", "other_lender_code")
 
 
@@ -160,10 +157,8 @@ def _checked(outcome: Outcome) -> Outcome:
 def _names_only(settings: Settings, manifest: Manifest, year: int, client: httpx.Client) -> Outcome:
     key = f"{FILERS_SOURCE}:{year}"
     note = (
-        f"No Reporter Panel is published for {year}, so there is no LEI-RSSD link. Saved the "
-        f"names-only filers list; the Philadelphia Fed HMDA Lender File ({LENDER_FILE_URL}) "
-        f"can be placed in {panel_dir(settings)}/ as {year}_*panel*.csv if it has the panel "
-        "columns."
+        f"No Reporter Panel is published for {year}. Saved the Data Browser filers list "
+        "(names only), which the QA report uses to check the Lender File's coverage."
     )
     if manifest.is_cached(key):
         return Outcome(year, "names only", manifest.abspath(manifest.get(key).path), note)

@@ -12,7 +12,7 @@ import polars as pl
 from armreset.db import connect, create_views, replace_table
 from armreset.ingest.cdr import MdrmSpec, StageResult, stage_quarter
 from armreset.ingest.hmda import StagedYear, stage_year, staged_years, stg_dir
-from armreset.ingest.panel import build_dim_hmda_lender
+from armreset.ingest.lenders import build_dim_hmda_lender
 from armreset.manifest import Manifest
 from armreset.model.repricing import build_dim_bank, build_fact, qa_flags
 from armreset.segments import Segments
@@ -109,6 +109,7 @@ def build(settings: Settings, force: bool = False) -> BuildSummary:
     lenders = build_dim_hmda_lender(Manifest.for_settings(settings), segments, filers)
     if lenders is not None:
         tables["dim_hmda_lender"] = lenders
+        tables["dim_institution_type"] = segments.institution_type_table()
     params = {"unmapped_segment": segments.unmapped}
     if staged_years(settings):
         tables["dim_purchaser_segment"] = segments.purchaser_table()

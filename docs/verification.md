@@ -25,6 +25,103 @@ Status key:
 | §5.1 | The buckets plus nonaccrual equal the first-lien total | phases 1–2 | **confirmed** for all 166,554 bank-quarters; checked on every build |
 | §5.2 | `intro_m` histogram clusters near 12, 36, 60, 84 and 120 | phase 3 | **confirmed** for 36–120; 180 and 1 month are also real clusters |
 | §11 | One large bank's six buckets match its Call Report PDF | phase 1 | **passed**: JPMorgan Chase Bank, 2026-06-30 |
+| §5.3 | Lender source: the Philadelphia Fed HMDA Lender File replaces the panel (user decision) | before phase 4 | **adjusted**: one row per lender-year, 2018–2025; a Call Report filer is a bank |
+
+## Lender source (2026-09-25): the Philadelphia Fed HMDA Lender File
+
+**Decision:** the user chose the Lender File (option 2 in the next section) as the lender
+source for every year. It replaces the CFPB Reporter Panel in PLAN.md §5.3. The panel and the
+Data Browser filers lists stay, as a cross-check in the QA report.
+
+### Fields checked against the file
+
+Each check compares the file with the Fed's variable definitions page.
+
+| Field | Definition | In the file | Used as |
+|---|---|---|---|
+| `YEAR`, `CODE`, `TYPE` | Year; regulator (1 OCC, 2 FRB, 3 FDIC, 5 NCUA, 7 HUD, 9 CFPB); institution type | Whole numbers, never blank | `activity_year`, `agency_code`, `institution_type` |
+| `LEI` | 20 characters, uppercase | All 20 characters, uppercase, no spaces | `lei` |
+| `RSSD`, `RSSDP`, `RSSDHH` | Filer, direct parent, regulatory high holder | Never blank; 0 means none (2,666 filer rows) | `respondent_rssd`, `parent_rssd`, `top_holder_rssd`, with 0 as null |
+| `NAMET` | Filer name as filed, 30 characters | 7,915 names are cut at 30, e.g. "LIBERTYVILLE BANK & TRUST COMP" | `name` |
+| `STATET`, `PLACET` | Headquarters | State is a 2-digit FIPS code, not a postal code | Not used |
+| `ASSETS` | Assets of the institution most likely subject to CRA, in $1,000s | Blank for all 7,161 independent-mortgage-bank rows | Not used |
+
+- **One sheet, found by its columns.** The sheet is `beta3` in this release. The reader looks
+  for the sheet with the lender columns, so a renamed sheet in a later release still works.
+- **`other_lender_code` is gone.** The Lender File doesn't carry it. `institution_type` (the
+  file's `TYPE`) takes its place as the raw code behind `lender_type`.
+
+### Lender type
+
+`TYPE` maps to `lender_type` in `config/segments.yaml`:
+
+| lender_type | TYPE codes |
+|---|---|
+| bank | 10 commercial bank; 13 failed commercial bank; 14 US branch of a foreign bank; 20 savings, S&L, industrial or cooperative bank; 23 failed thrift |
+| bank_affiliate | 11 commercial bank subsidiary; 12 subsidiary of a bank or financial holding company; 21 subsidiary of a noncommercial depository; 22 subsidiary of a thrift holding company; 41 independent mortgage bank affiliated with a depository |
+| credit_union | 30 credit union; 31 credit union subsidiary; 32 credit union service organization; 33 failed credit union |
+| independent_mortgage_company | 40 independent mortgage bank |
+
+- **One override:** a lender whose RSSD files a Call Report that year is typed `bank`. Only
+  banks and savings associations file Call Reports.
+  - This changes 21 lender-years across 2018–2025.
+  - 16 of them are coded 30 (credit union) but file HMDA under a bank's name, all but one
+    with the FDIC as regulator. Their RSSD files a Call Report under the same name. Examples:
+    Oxford Bank & Trust and Edgewater Bank (2021), Savibank (2025).
+  - Cornerstone Capital Bank, SSB is coded 21 (a subsidiary) in 2022–2025. It files its own
+    Call Report.
+  - One is a conversion. "Five Star Credit Union FKA OneSouth Bank" (2024) filed Call Reports
+    as OneSouth Bank earlier that year, so it is a bank for 2024.
+- **26 lender-years are coded bank but their RSSD filed no Call Report that year.** They stay
+  `bank`, and `v_bank_hmda_link` shows why they're unlinked. They include:
+  - the New York branch of Shanghai Commercial Bank, which files FFIEC 002, not a Call Report;
+  - banks absorbed early in the year: Great Western Bank and First Midwest Bank (2022), Bank
+    of the West (2023);
+  - two banks with no RSSD (2020).
+- **The QA report counts both cases every year**, in "Lenders by type".
+
+### Build results
+
+- **`dim_hmda_lender`: 39,525 rows**, one per `(activity_year, lei)`, 2018–2025, all from the
+  Lender File.
+- **2021 link, lenders with originations:**
+
+  | match_status | Lenders | Loans | ARM dollars |
+  |---|---|---|---|
+  | `matched` | 1,955 | 26.0% | 81.3% |
+  | `rssd_not_a_call_report_filer` | 2,054 | 65.7% | 17.4% |
+  | `no_rssd` | 302 | 8.3% | 1.3% |
+  | `not_in_lender_file` | 0 | | |
+
+  - All 1,955 lenders typed `bank` are linked. With the CFPB panel, 1,910 of 1,932 were
+    (98.9%).
+  - The 42 late filers the panel lacked (44,739 loans) now have lender rows.
+- **Coverage (QA report):**
+
+  | Year | CFPB list | Lenders | In Lender File | Agency code agrees | RSSD agrees |
+  |---|---|---|---|---|---|
+  | 2021 | Panel | 4,333 | 4,333 | 4,332 | 4,195 |
+  | 2022 | Panel | 4,467 | 4,465 | 4,460 | 4,387 |
+  | 2023 | Panel | 5,113 | 5,113 | 5,112 | 5,032 |
+  | 2024 | Filers list | 4,908 | 4,908 | | |
+  | 2025 | Filers list | 4,660 | 4,660 | | |
+
+  - The two 2022 panel lenders missing from the Lender File are CFPB test records:
+    "CHYNNATEST TEST Bank" and "Cypress Test Name Update".
+
+### Code changes
+
+- **New command:** `armtool fetch lenders` downloads the workbook once and records it as
+  `philfed_lender:hmda-2018-present`. A copy placed by hand in `data/raw/philfed_lender/` is
+  recorded instead.
+- **New dependency:** `fastexcel` reads it.
+- **`dim_hmda_lender`:**
+  - `other_lender_code` became `institution_type`.
+  - `state`, `city`, `assets` and `panel_available` are dropped.
+  - A new table, `dim_institution_type`, lists the TYPE mapping.
+- **`v_bank_hmda_link` statuses renamed:** `not_in_panel` became `not_in_lender_file`, and
+  `no_panel_for_year` became `no_lender_file_for_year`.
+- **Removed:** the rule chain on agency and lender codes (phase 3, item 7).
 
 ## Before phase 4 (2026-09-25): lender data for 2024 and 2025
 

@@ -21,7 +21,7 @@ MANUFACTURED = "Single Family (1-4 Units):Manufactured"
 BANK_LEI = "BANK0000000000000001"
 CU_LEI = "CREDITUNION000000002"
 IMC_LEI = "MORTGAGECO0000000003"
-UNPANELLED_LEI = "NOTINPANEL0000000004"
+UNLISTED_LEI = "NOTLISTED00000000004"  # in the LAR, not in the Lender File
 
 
 def row(**overrides: str) -> dict[str, str]:
@@ -61,7 +61,7 @@ CASES: list[tuple[str, dict[str, str], str | None]] = [
     ("arm leading zeros", row(intro_rate_period="00120", loan_term="00360", purchaser_type="4",
                               conforming_loan_limit="NC", loan_amount="1505000"), "arm"),
     ("arm io one month", row(intro_rate_period="1", interest_only_payment="1",
-                             purchaser_type="99", lei=UNPANELLED_LEI), "arm"),
+                             purchaser_type="99", lei=UNLISTED_LEI), "arm"),
     ("arm manufactured", row(intro_rate_period="84", derived_dwelling_category=MANUFACTURED,
                              interest_rate="NA", purchaser_type="2"), "arm"),
     ("open-end", row(**{"open-end_line_of_credit": "1", "intro_rate_period": "1"}), None),
@@ -102,3 +102,48 @@ PANEL_ROWS = [
     (CU_LEI, "5", "555", "Hometown Credit Union", "0"),
     (IMC_LEI, "7", "-1", "Mortgage Co LLC", "3"),
 ]
+
+
+# Philadelphia Fed HMDA Lender File rows: (lei, CODE, TYPE, RSSD, RSSDHH, NAMET).
+# RSSD 100 files a Call Report in the build fixtures; 555 and 777 don't.
+LENDER_ROWS = [
+    (BANK_LEI, 1, 10, 100, 1000, "BIG BANK, N.A."),
+    (CU_LEI, 5, 30, 555, 0, "HOMETOWN CREDIT UNION"),
+    (IMC_LEI, 7, 40, 0, 0, "MORTGAGE CO LLC"),
+    ("AFFILIATE00000000005", 2, 12, 777, 1000, "BIG BANK MORTGAGE LLC"),
+]
+
+
+def lender_file_frame(rows=LENDER_ROWS, year: int = 2021):
+    """Lender File rows as the workbook holds them: numbers are numeric cells."""
+    import polars as pl
+
+    return pl.DataFrame(
+        {
+            "YEAR": [year] * len(rows),
+            "LEI": [r[0] for r in rows],
+            "TAXID": ["00-0000000"] * len(rows),
+            "CODE": [r[1] for r in rows],
+            "NAMET": [r[5] for r in rows],
+            "TYPE": [r[2] for r in rows],
+            "RSSD": [r[3] for r in rows],
+            "RSSDP": [r[4] for r in rows],
+            "RSSDHH": [r[4] for r in rows],
+            "ASSETS": [None] * len(rows),
+        },
+        schema_overrides={"ASSETS": pl.Int64},
+    )
+
+
+def write_lender_file(path: Path, frame=None, sheet: str = "beta3", notes: bool = False) -> Path:
+    """Write ``frame`` (default: LENDER_ROWS for 2021) as an .xlsx workbook. ``notes`` puts a
+    text-only sheet first, as a future release might."""
+    import xlsxwriter
+
+    frame = lender_file_frame() if frame is None else frame
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with xlsxwriter.Workbook(path) as workbook:
+        if notes:
+            workbook.add_worksheet("Notes").write(0, 0, "HMDA Lender File, see the website")
+        frame.write_excel(workbook=workbook, worksheet=sheet)
+    return path

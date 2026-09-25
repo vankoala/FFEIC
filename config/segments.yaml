@@ -34,43 +34,38 @@ holder_segments:
 # Any purchaser_type not listed above maps here, and the QA report counts those rows.
 unmapped_segment: unmapped
 
-# HMDA panel -> lender_type (PLAN.md §5.3). First matching rule wins; raw codes are kept
-# alongside the mapped value in dim_hmda_lender. Conditions: in_call_reports (the RSSD files
-# a Call Report that year; a rule on it never matches when Call Reports for the year aren't
-# loaded), agency_code, other_lender_code, name_pattern (case-insensitive).
+# Lender type, from the Philadelphia Fed HMDA Lender File's TYPE ("Institution Type (Filer,
+# NIC)"): code -> label, grouped by the lender_type it maps to. dim_hmda_lender keeps the raw
+# code next to the mapped value, and dim_institution_type lists this table. Each code appears
+# once; a code not listed maps to unknown_lender_type.
 #
-# VERIFY result (docs/verification.md, item 7), from the 2021 panel. The panel codes alone
-# misclassify:
-#   - other_lender_code 3 is labelled "independent mortgage banking subsidiary", but 867 of
-#     its 938 lenders report to HUD (agency 7) and are independent mortgage companies.
-#   - other_lender_code -1 (blank) mixes banks, credit unions and mortgage companies.
-#   - Large credit unions report to the CFPB (agency 9), not NCUA (agency 5): Navy Federal,
-#     PenFed, Boeing Employees, Star One.
-# So the Call Report link comes first, and the codes decide the rest.
-#   agency_code: 1 OCC, 2 FRS, 3 FDIC, 5 NCUA, 7 HUD, 9 CFPB
-#   other_lender_code: 0 depository, 1 MBS of state member bank, 2 MBS of bank holding
-#   company, 3 independent mortgage banking subsidiary, 5 affiliate of a depository, -1 blank
-lender_type_rules:
-  - lender_type: bank                 # banks and savings associations file Call Reports
-    in_call_reports: true
-  - lender_type: credit_union
-    agency_code: [5]
-  - lender_type: credit_union         # large credit unions supervised by the CFPB
-    name_pattern: "credit union"
-  - lender_type: credit_union         # a CFPB-supervised depository with no Call Report is
-    agency_code: [9]                  # a credit union, e.g. "STATE EMPLOYEES'", "THE GOLDEN 1"
-    other_lender_code: [0]
-    in_call_reports: false
-  - lender_type: bank_affiliate       # mortgage subsidiaries and affiliates of depositories
-    other_lender_code: [1, 2, 5]
-  - lender_type: independent_mortgage_company
-    other_lender_code: [3]
-  - lender_type: independent_mortgage_company
-    agency_code: [7]
-  - lender_type: independent_mortgage_company   # CFPB-supervised non-depositories
-    agency_code: [9]
-    other_lender_code: [-1]
-    in_call_reports: false
-  - lender_type: bank                 # bank regulators, but no Call Report match that year
-    agency_code: [1, 2, 3]
-  - lender_type: unknown
+# The Lender File replaced the CFPB Reporter Panel as the lender source (docs/verification.md,
+# "Lender source"). The panel's agency and lender codes needed a chain of rules and the Call
+# Report link to classify lenders; TYPE comes from the Fed's National Information Center.
+#
+# One override: a lender whose RSSD files a Call Report that year gets call_report_filer_type,
+# since only banks and savings associations file Call Reports. In 2018-2025 this retypes 21
+# lender-years, mostly small banks coded 30 (credit union) that file HMDA under their bank
+# names, e.g. Oxford Bank & Trust (2021) and Savibank (2025).
+call_report_filer_type: bank
+lender_types:
+  bank:
+    10: commercial bank
+    13: failed commercial bank, no successor
+    14: US branch of a foreign bank
+    20: savings bank, savings and loan, industrial or cooperative bank
+    23: failed thrift, no successor
+  bank_affiliate:
+    11: commercial bank subsidiary
+    12: subsidiary of a bank or financial holding company
+    21: subsidiary of a savings bank or other noncommercial depository
+    22: subsidiary of a thrift holding company
+    41: independent mortgage bank affiliated with a depository
+  credit_union:
+    30: credit union
+    31: credit union subsidiary
+    32: credit union service organization
+    33: failed credit union, no successor
+  independent_mortgage_company:
+    40: independent mortgage bank
+unknown_lender_type: unknown

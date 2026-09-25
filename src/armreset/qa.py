@@ -17,6 +17,7 @@ import polars as pl
 from armreset.db import connect, relations
 from armreset.ingest.cdr import MdrmSpec
 from armreset.model.repricing import HIGH_NONACCRUAL_SHARE, ROUNDING_TOLERANCE_USD
+from armreset.segments import Segments
 from armreset.settings import Settings
 
 BUCKET_LABELS = {
@@ -173,7 +174,8 @@ def hmda_holder_segments(con: duckdb.DuckDBPyConnection) -> pl.DataFrame:
 def hmda_rssd_match(con: duckdb.DuckDBPyConnection) -> pl.DataFrame:
     return con.sql(
         """
-        SELECT activity_year AS year, coalesce(lender_type, '(not in panel)') AS "lender type",
+        SELECT activity_year AS year,
+               coalesce(lender_type, '(not in Lender File)')        AS "lender type",
                count(*)                                              AS lenders,
                count(*) FILTER (WHERE match_status = 'matched')      AS "linked to a Call Report",
                avg((match_status = 'matched')::INT)                  AS "linked share",
@@ -182,6 +184,73 @@ def hmda_rssd_match(con: duckdb.DuckDBPyConnection) -> pl.DataFrame:
         FROM v_bank_hmda_link WHERE loans > 0 GROUP BY ALL ORDER BY year, loans DESC
         """
     ).pl()
+
+
+def lender_types_by_year(con: duckdb.DuckDBPyConnection, filer_type: str) -> pl.DataFrame:
+    """Lenders per year by ``lender_type``, with two checks against the Call Report link:
+    lenders typed ``filer_type`` only because their RSSD files a Call Report (their institution
+    code says otherwise), and lenders whose code says ``filer_type`` but whose RSSD filed no
+    Call Report that year."""
+    df = con.execute(
+        """
+        SELECT l.activity_year AS year, l.lender_type,
+               coalesce(l.in_call_reports AND t.lender_type IS DISTINCT FROM ?, false)
+                   AS by_link,
+               coalesce(NOT l.in_call_reports AND t.lender_type = ?, false) AS no_filing
+        FROM dim_hmda_lender l LEFT JOIN dim_institution_type t USING (institution_type)
+        """,
+        [filer_type, filer_type],
+    ).pl()
+    counts = df.pivot(on="lender_type", index="year", values="by_link", aggregate_function="len")
+    checks = df.group_by("year").agg(
+        pl.col("by_link").sum().alias(f"{filer_type} by Call Report, not by code"),
+        pl.col("no_filing").sum().alias(f"{filer_type} by code, no Call Report"),
+    )
+    types = sorted(c for c in counts.columns if c != "year")
+    return (
+        counts.fill_null(0)
+        .join(checks, on="year")
+        .select("year", *types, *checks.columns[1:])
+        .sort("year")
+    )
+
+
+def lender_file_coverage(settings: Settings, con: duckdb.DuckDBPyConnection) -> pl.DataFrame | None:
+    """The Lender File checked against every recorded CFPB list of lenders for the year."""
+    from armreset.ingest.panel import cfpb_lender_lists
+    from armreset.manifest import Manifest
+
+    lists = cfpb_lender_lists(Manifest.for_settings(settings))
+    if lists is None:
+        return None
+    dim = con.sql(
+        "SELECT activity_year::INTEGER AS activity_year, lei, respondent_rssd AS file_rssd, "
+        "agency_code AS file_agency, true AS in_file FROM dim_hmda_lender"
+    ).pl()
+    joined = lists.join(dim, on=["activity_year", "lei"], how="left")
+    panel = pl.col("cfpb_list") == "panel"
+    both = pl.col("in_file").fill_null(False)
+    return (
+        joined.group_by("activity_year", "cfpb_list")
+        .agg(
+            pl.len().alias("lenders"),
+            both.sum().alias("in Lender File"),
+            pl.when(panel.first())
+            .then((both & (pl.col("agency_code") == pl.col("file_agency"))).sum())
+            .alias("agency code agrees"),
+            # No RSSD in either file counts as agreeing.
+            pl.when(panel.first())
+            .then(
+                (
+                    both
+                    & (pl.col("respondent_rssd").fill_null(0) == pl.col("file_rssd").fill_null(0))
+                ).sum()
+            )
+            .alias("RSSD agrees"),
+        )
+        .rename({"activity_year": "year", "cfpb_list": "CFPB list"})
+        .sort("year")
+    )
 
 
 def report_path(settings: Settings) -> Path:
@@ -264,6 +333,35 @@ def write_report(settings: Settings) -> Path:
                 "",
                 markdown_table(hmda_rssd_match(con)),
             ]
+        if {"dim_hmda_lender", "dim_institution_type"} <= names:
+            segments = Segments.load(settings.config_file("segments.yaml"))
+            sections += [
+                "",
+                "## HMDA lenders",
+                "",
+                "From the Philadelphia Fed HMDA Lender File, one row per lender and year. "
+                "`lender_type` maps the file's institution type (config/segments.yaml).",
+                "",
+                "### Lenders by type",
+                "",
+                "A lender whose RSSD files a Call Report that year is typed "
+                f"{segments.call_report_filer_type}, whatever its institution code. The last two "
+                "columns count where the code and the Call Report link disagree.",
+                "",
+                markdown_table(lender_types_by_year(con, segments.call_report_filer_type)),
+            ]
+            coverage = lender_file_coverage(settings, con)
+            if coverage is not None:
+                sections += [
+                    "",
+                    "### Lender File coverage",
+                    "",
+                    "Each CFPB list of lenders against the Lender File: the Reporter Panel for "
+                    "2018-2023, the Data Browser filers list after that. The agreement columns "
+                    "count lenders in both; no RSSD in either file counts as agreeing.",
+                    "",
+                    markdown_table(coverage),
+                ]
     finally:
         con.close()
     path = report_path(settings)

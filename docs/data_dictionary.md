@@ -54,21 +54,22 @@ One row per flag raised on a bank-quarter. The flag rules are in `docs/methodolo
 
 ### `dim_hmda_lender`
 
-One row per `(activity_year, lei)`, from the HMDA Reporter Panel. For years without a panel
-(2024 on), the rows come from the Data Browser filers list, with names only.
+One row per `(activity_year, lei)`, from the Philadelphia Fed HMDA Lender File (2018–2025).
 
 | Column | Type | Notes |
 |---|---|---|
 | `activity_year`, `lei` | INTEGER, VARCHAR | Key |
-| `name` | VARCHAR | Respondent name |
-| `respondent_rssd`, `parent_rssd`, `top_holder_rssd` | BIGINT | NIC RSSD IDs; null where the panel has −1 |
-| `agency_code` | BIGINT | 1 OCC, 2 FRS, 3 FDIC, 5 NCUA, 7 HUD, 9 CFPB |
-| `other_lender_code` | BIGINT | 0 depository, 1 MBS of state member bank, 2 MBS of BHC, 3 "independent mortgage banking subsidiary", 5 affiliate of a depository, −1 blank |
-| `assets` | BIGINT | As the panel reports it; null where −1 |
-| `state`, `city` | VARCHAR | Headquarters |
+| `name` | VARCHAR | Filer name as filed with HMDA, cut at 30 characters |
+| `respondent_rssd`, `parent_rssd`, `top_holder_rssd` | BIGINT | NIC RSSD IDs of the lender, its direct parent and its regulatory high holder; null where the file has 0 |
+| `agency_code` | BIGINT | 1 OCC, 2 FRB, 3 FDIC, 5 NCUA, 7 HUD, 9 CFPB |
+| `institution_type` | BIGINT | The Fed's institution type code; labels in `dim_institution_type` |
+| `lender_type` | VARCHAR | `bank`, `bank_affiliate`, `credit_union`, `independent_mortgage_company` or `unknown`. From `institution_type`, except that a Call Report filer is always `bank` |
 | `in_call_reports` | BOOLEAN | The RSSD filed a Call Report that year; null when no Call Reports are loaded for the year |
-| `lender_type` | VARCHAR | `bank`, `credit_union`, `bank_affiliate`, `independent_mortgage_company` or `unknown`; rules in `config/segments.yaml` |
-| `panel_available` | BOOLEAN | False for names-only years |
+
+### `dim_institution_type`
+
+The Lender File's institution type codes and the `lender_type` each maps to, from
+`config/segments.yaml`. Columns: `institution_type`, `institution_label`, `lender_type`.
 
 ### `dim_purchaser_segment`
 
@@ -112,12 +113,12 @@ Loan counts and dollars by `activity_year` × `rate_type` × `holder_segment` ×
 
 ### `v_bank_hmda_link`
 
-One row per `(activity_year, lei)` from the panel or the loan file.
+One row per `(activity_year, lei)` in the Lender File or the loan file.
 
 | Column | Notes |
 |---|---|
-| `activity_year`, `lei`, `name`, `lender_type`, `agency_code`, `other_lender_code`, `respondent_rssd` | From `dim_hmda_lender` |
-| `match_status` | `matched`, `rssd_not_a_call_report_filer`, `no_rssd`, `not_in_panel` or `no_panel_for_year` |
+| `activity_year`, `lei`, `name`, `lender_type`, `agency_code`, `institution_type`, `respondent_rssd` | From `dim_hmda_lender` |
+| `match_status` | `matched`, `rssd_not_a_call_report_filer`, `no_rssd`, `not_in_lender_file` or `no_lender_file_for_year` |
 | `call_report_name`, `call_report_date` | The matched filer's name and its latest report date that year |
 | `loans`, `amount`, `arm_loans`, `arm_amount` | The lender's originations that year in `stg_hmda` |
 

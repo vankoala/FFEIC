@@ -15,12 +15,7 @@ from armreset.fetch.panel import (
     fetch_panels,
     panel_url,
 )
-from armreset.ingest.panel import (
-    build_dim_hmda_lender,
-    lenders_from_filers,
-    lenders_from_panel,
-    read_panel,
-)
+from armreset.ingest.panel import cfpb_lender_lists, read_panel
 from armreset.manifest import Manifest
 from armreset.segments import Segments
 from armreset.settings import Settings, load_settings
@@ -66,60 +61,6 @@ def test_read_panel_renames_topholder_columns(panel, tmp_path: Path) -> None:
     assert read_panel(pipe)["lei"].to_list() == [r[0] for r in PANEL_ROWS]
 
 
-# (lei, agency, rssd, name, other_lender_code), in Call Reports?, expected lender_type
-RULE_CASES = [
-    (("L1", "1", "100", "Big Bank", "0"), True, "bank"),
-    (("L2", "9", "200", "Flagstar Bank", "0"), True, "bank"),  # CFPB-supervised bank
-    (("L3", "3", "300", "Paducah Bank", "3"), True, "bank"),  # bank with an affiliate code
-    (("L4", "5", "400", "Kitsap Credit Union", "0"), False, "credit_union"),
-    (("L5", "9", "500", "Navy Federal Credit Union", "-1"), False, "credit_union"),
-    (("L6", "9", "600", "THE GOLDEN 1", "0"), False, "credit_union"),  # CFPB depository, no CR
-    (("L7", "2", "-1", "PrimeLending", "1"), False, "bank_affiliate"),
-    (("L8", "7", "-1", "Rocket-ish Mortgage", "3"), False, "independent_mortgage_company"),
-    (("L9", "7", "-1", "Smartfi Home Loans", "-1"), False, "independent_mortgage_company"),
-    (("L10", "9", "-1", "Vista Point Mortgage", "-1"), False, "independent_mortgage_company"),
-    (("L11", "3", "-1", "Citizens State Bank", "-1"), False, "bank"),  # no RSSD, bank regulator
-]
-
-
-def test_lender_types(segments: Segments, panel) -> None:
-    rows = panel([case[0] for case in RULE_CASES])
-    filers = pl.DataFrame(
-        {
-            "activity_year": [2021] * 3,
-            "rssd_id": [int(c[0][2]) for c in RULE_CASES if c[1]],
-        }
-    )
-    dim = lenders_from_panel(rows, 2021, segments, filers)
-    got = dict(zip(dim["lei"], dim["lender_type"], strict=True))
-    assert got == {case[0][0]: case[2] for case in RULE_CASES}
-    assert dim.filter(pl.col("lei") == "L7")["respondent_rssd"].to_list() == [None]  # -1
-    assert dim["in_call_reports"].to_list() == [case[1] for case in RULE_CASES]
-
-
-def test_without_call_reports_the_link_rules_never_fire(segments: Segments, panel) -> None:
-    dim = lenders_from_panel(panel([case[0] for case in RULE_CASES]), 2021, segments, None)
-    got = dict(zip(dim["lei"], dim["lender_type"], strict=True))
-    assert got["L2"] == "unknown"  # a CFPB bank isn't guessed to be a credit union
-    assert got["L6"] == "unknown"
-    assert got["L1"] == "bank"  # bank regulators still read as banks
-    assert dim["in_call_reports"].null_count() == dim.height
-
-
-def test_panel_for_another_year_is_refused(segments: Segments, panel) -> None:
-    with pytest.raises(ValueError, match="activity years"):
-        lenders_from_panel(panel(PANEL_ROWS), 2022, segments)
-
-
-def test_filers_list_gives_names_only_rows(tmp_path: Path) -> None:
-    path = tmp_path / "filers_2025.json"
-    path.write_text(json.dumps([{"lei": "abc ", "name": "Some Lender", "count": 3}]))
-    dim = lenders_from_filers(path, 2025)
-    row = dim.row(0, named=True)
-    assert (row["lei"], row["lender_type"], row["panel_available"]) == ("ABC", "unknown", False)
-    assert row["respondent_rssd"] is None
-
-
 def test_segments_config(segments: Segments) -> None:
     table = segments.purchaser_table()
     assert table["purchaser_type"].is_unique().all()
@@ -131,7 +72,7 @@ def test_segments_reject_a_code_in_two_segments(tmp_path: Path) -> None:
     bad = tmp_path / "segments.yaml"
     bad.write_text(
         "holder_segments:\n  a: {label: A, purchaser_types: [0]}\n"
-        "  b: {label: B, purchaser_types: [0]}\nlender_type_rules: []\n"
+        "  b: {label: B, purchaser_types: [0]}\nlender_types: {}\n"
     )
     with pytest.raises(ValueError, match="purchaser_type 0"):
         Segments.load(bad)
@@ -147,9 +88,7 @@ def _files_server(seen: list[str], panel: bytes) -> httpx.MockTransport:
     return httpx.MockTransport(handler)
 
 
-def test_fetch_panels_downloads_or_falls_back_to_names(
-    settings: Settings, segments: Segments
-) -> None:
+def test_fetch_panels_downloads_or_falls_back_to_names(settings: Settings) -> None:
     assert 2021 in PANEL_YEARS and 2025 not in PANEL_YEARS
     seen: list[str] = []
     client = httpx.Client(transport=_files_server(seen, _zip(panel_csv(PANEL_ROWS))))
@@ -157,11 +96,11 @@ def test_fetch_panels_downloads_or_falls_back_to_names(
     outcomes = fetch_panels(settings, manifest, [2021, 2025], client=client)
     assert [o.status for o in outcomes] == ["downloaded", "names only"]
     assert seen[0] == panel_url(2021)
-    assert "no LEI-RSSD link" in outcomes[1].detail
-    dim = build_dim_hmda_lender(Manifest.for_settings(settings), segments)
-    assert dim.group_by("activity_year").len().sort("activity_year").rows() == [
-        (2021, 3),
-        (2025, 1),
+    assert "check the Lender File's coverage" in outcomes[1].detail
+    lists = cfpb_lender_lists(Manifest.for_settings(settings))
+    assert lists.group_by("activity_year", "cfpb_list").len().sort("activity_year").rows() == [
+        (2021, "panel", 3),
+        (2025, "filers list", 1),
     ]
 
     again = fetch_panels(settings, Manifest.for_settings(settings), [2021, 2025], client=client)
@@ -224,3 +163,19 @@ def test_a_hand_placed_file_that_fails_the_check_is_not_recorded(settings: Setti
     [outcome] = fetch_panels(settings, Manifest.for_settings(settings), [2024], client=None)
     assert outcome.status == "failed" and "replace the file" in outcome.detail
     assert "hmda_panel:2024" not in Manifest.for_settings(settings)
+
+
+def test_cfpb_lists_prefer_the_panel_and_null_its_minus_one(settings: Settings) -> None:
+    manifest = Manifest.for_settings(settings)
+    panel = settings.raw_dir / "hmda_panel" / "2021_public_panel_csv.zip"
+    panel.parent.mkdir(parents=True)
+    panel.write_bytes(_zip(panel_csv(PANEL_ROWS)))
+    manifest.record("hmda_panel:2021", "hmda_panel", panel, period="2021")
+    filers = settings.raw_dir / "hmda_panel" / "filers_2021.json"
+    filers.write_text(json.dumps([{"lei": "other", "name": "Other", "count": 1}]))
+    manifest.record("hmda_filers:2021", "hmda_filers", filers, period="2021")
+    lists = cfpb_lender_lists(Manifest.for_settings(settings))
+    assert lists["cfpb_list"].unique().to_list() == ["panel"]  # the 2021 filers list is ignored
+    rssd = dict(zip(lists["lei"], lists["respondent_rssd"], strict=True))
+    assert rssd == {r[0]: (None if r[2] == "-1" else int(r[2])) for r in PANEL_ROWS}
+    assert cfpb_lender_lists(Manifest(settings.raw_dir / "none.json", settings.root)) is None

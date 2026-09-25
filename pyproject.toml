@@ -19,6 +19,7 @@ dependencies = [
     # Pre-release that scrapes the CDR ASP.NET bulk-download page: keep the exact pin.
     # The CDR fetcher falls back to manually placed zips when it fails.
     "ffiec-data-collector==2.0.0rc2",
+    "fastexcel>=0.21.0",
 ]
 
 [project.optional-dependencies]
@@ -32,6 +33,7 @@ dev = [
     "pytest>=8.0",
     "ruff>=0.6",
     "hypothesis>=6.100",
+    "xlsxwriter>=3.2.9",
 ]
 
 [build-system]

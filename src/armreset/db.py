@@ -119,7 +119,7 @@ VIEWS: dict[str, tuple[frozenset[str], str]] = {
         GROUP BY ALL
         """,
     ),
-    # One row per (activity_year, lei): the panel's RSSD and whether it files a Call Report.
+    # One row per (activity_year, lei): the Lender File's RSSD and whether it files a Call Report.
     "v_bank_hmda_link": (
         frozenset({"stg_hmda", "dim_hmda_lender", "dim_bank"}),
         """
@@ -135,18 +135,19 @@ VIEWS: dict[str, tuple[frozenset[str], str]] = {
             SELECT rssd_id, year(report_date) AS activity_year,
                    max(report_date) AS report_date, arg_max(name, report_date) AS name
             FROM dim_bank GROUP BY ALL
-        )
+        ),
+        lender_years AS (SELECT DISTINCT activity_year FROM dim_hmda_lender)
         SELECT
             coalesce(l.activity_year, x.activity_year)      AS activity_year,
             coalesce(l.lei, x.lei)                          AS lei,
             l.name,
             l.lender_type,
             l.agency_code,
-            l.other_lender_code,
+            l.institution_type,
             l.respondent_rssd,
             CASE
-                WHEN l.lei IS NULL                  THEN 'not_in_panel'
-                WHEN NOT l.panel_available          THEN 'no_panel_for_year'
+                WHEN l.lei IS NULL AND y.activity_year IS NULL THEN 'no_lender_file_for_year'
+                WHEN l.lei IS NULL                  THEN 'not_in_lender_file'
                 WHEN l.respondent_rssd IS NULL      THEN 'no_rssd'
                 WHEN c.rssd_id IS NOT NULL          THEN 'matched'
                 ELSE 'rssd_not_a_call_report_filer'
@@ -159,6 +160,7 @@ VIEWS: dict[str, tuple[frozenset[str], str]] = {
             coalesce(x.arm_amount, 0)                       AS arm_amount
         FROM dim_hmda_lender l
         FULL JOIN lar x ON x.lei = l.lei AND x.activity_year = l.activity_year
+        LEFT JOIN lender_years y ON y.activity_year = x.activity_year
         LEFT JOIN call_reports c
                ON c.rssd_id = l.respondent_rssd AND c.activity_year = l.activity_year
         """,
