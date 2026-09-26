@@ -1,0 +1,30 @@
+# Streamlit settings for `armtool app`, which runs from the project root.
+# Surfaces and ink follow the dashboard palette (src/armreset/app/ui.py); the primary color
+# is the one data hue, blue.
+
+[browser]
+gatherUsageStats = false
+
+# Print the address instead of opening a browser (and never stop for a first-run prompt).
+# Listen on this machine only; a browser on the Windows side still reaches it through WSL.
+[server]
+headless = true
+address = "localhost"
+
+[client]
+toolbarMode = "minimal"
+
+[theme]
+font = "sans serif"
+
+[theme.light]
+backgroundColor = "#fcfcfb"
+secondaryBackgroundColor = "#f0efec"
+textColor = "#0b0b0b"
+primaryColor = "#2a78d6"
+
+[theme.dark]
+backgroundColor = "#1a1a19"
+secondaryBackgroundColor = "#2c2c2a"
+textColor = "#ffffff"
+primaryColor = "#3987e5"

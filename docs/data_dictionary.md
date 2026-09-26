@@ -132,6 +132,21 @@ once: **filter to one scenario, never add scenarios together.**
 | `orig_amount` | DOUBLE | Original loan amount × share, USD |
 | `bal_at_reset` | DOUBLE | Modeled balance at the reset × share, USD: amount × scheduled amortization × survival, at the origination year's history CPR up to `model.as_of` and the scenario's CPR after it |
 
+### `fact_reset_window`
+
+First resets inside the Call Report windows, for the HMDA vs Call Report cross-check (PLAN.md
+§7.3): the ones that fall within 12 and 36 months after the latest Call Report date (or
+`model.as_of` without Call Reports). Same balance model as `fact_reset_calendar`. The 36-month
+window includes the 12-month one, as `within_3y` includes `within_12m`.
+
+| Column | Notes |
+|---|---|
+| `scenario` | CPR scenario |
+| `window_months` | 12 or 36 |
+| `window_start` | The date the windows start from |
+| `orig_year`, `lei`, `holder_segment` | Origination year, lender and holder at origination |
+| `w_loans`, `orig_amount`, `bal_at_reset` | As in `fact_reset_calendar`, for the part of each loan's reset that falls in the window |
+
 ### `qa_reset_inputs`
 
 What went into the reset calendar: one row per `activity_year`, `intro_bucket` (months to
@@ -208,6 +223,19 @@ rows as the fact table; filter to one scenario.
 | `occupancy_type`, `occupancy_label` | e.g. 1, "Principal residence" |
 | `state_code`, `lei`, `is_io`, `rate_filled`, `term_filled` | As in `fact_reset_calendar` |
 | `w_loans`, `orig_amount`, `bal_at_reset` | As in `fact_reset_calendar` |
+
+### `v_bank_reset_crosscheck`
+
+PLAN.md §7.3, a diagnostic and never a sum. One row per scenario and bank that filed in the
+latest quarter and has HMDA retained ARMs resetting in the windows.
+
+| Column | Notes |
+|---|---|
+| `scenario`, `rssd_id`, `name`, `state`, `report_date` | Scenario and bank |
+| `leis` | HMDA lenders linked to the bank by the RSSD of their origination year |
+| `within_12m`, `within_3y` | The bank's own buckets, from `v_cdr_bank_latest` |
+| `hmda_within_12m`, `hmda_within_3y` | Its lenders' retained ARMs whose first reset falls in the window (`fact_reset_window`), USD |
+| `ratio_12m`, `ratio_3y` | HMDA divided by the Call Report figure; above 1 is worth a look |
 
 ### `v_reset_coverage`
 

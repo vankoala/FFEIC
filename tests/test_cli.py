@@ -68,15 +68,32 @@ def test_missing_config_exits_with_usage_error(tmp_path: Path, monkeypatch) -> N
     assert "missing.yaml" in result.output
 
 
-# Remove each case as its phase implements the command.
-@pytest.mark.parametrize(
-    "args",
-    [["app"]],
-)
-def test_unimplemented_commands_fail_loudly(project: Path, args: list[str]) -> None:
-    result = runner.invoke(app, args)
+def test_app_needs_a_warehouse(project: Path) -> None:
+    result = runner.invoke(app, ["app"])
     assert result.exit_code == 1
-    assert "not implemented yet" in result.output
+    assert "armtool build" in result.output
+
+
+def test_app_runs_streamlit_from_the_project_root(
+    project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (project / "data").mkdir()
+    (project / "data" / "warehouse.duckdb").touch()
+    calls = []
+
+    def fake_call(command, env, cwd):
+        calls.append((command, env, cwd))
+        return 0
+
+    monkeypatch.setattr("armreset.cli.subprocess.call", fake_call)
+    result = runner.invoke(app, ["app", "--port", "8600"])
+    assert result.exit_code == 0, result.output
+    [(command, env, cwd)] = calls
+    assert command[1:4] == ["-m", "streamlit", "run"]
+    assert command[4].endswith("armreset/app/Home.py") and Path(command[4]).exists()
+    assert command[5:] == ["--server.port", "8600"]
+    assert env["ARMRESET_CONFIG"] == str(project / "config.yaml")
+    assert cwd == project
 
 
 @pytest.mark.parametrize(

@@ -297,15 +297,63 @@ def _fact_sql(model: ModelConfig) -> str:
     """
 
 
+# PLAN.md §7.3: the HMDA vs Call Report cross-check needs the first resets inside the Call
+# Report windows, 12 months and 3 years after the report date (within_12m and within_3y).
+WINDOWS_M = (12, 36)
+
+
+def _window_sql(model: ModelConfig, start: date) -> str:
+    """``fact_reset_window``: first resets that fall in each of the WINDOWS_M months after
+    ``start``, with the same balance model as the calendar."""
+    io_shift = "(CASE WHEN x.is_io THEN x.intro_m ELSE 0 END)"
+    factor = sched_factor_sql("x.rate_used", f"x.term_used - {io_shift}", f"x.intro_m - {io_shift}")
+    survival = survival_between_sql(
+        "coalesce(h.cpr, s.cpr)",
+        "s.cpr",
+        "x.intro_m",
+        "x.t_lo",
+        "x.t_hi",
+        repr(year_fraction(model.as_of)),
+    )
+    t0 = "l.activity_year + l.intro_m / 12.0"
+    begin = repr(year_fraction(start))
+    return f"""
+    CREATE OR REPLACE TABLE fact_reset_window AS
+    WITH spans AS (
+        SELECT l.*, w.window_months,
+               greatest({t0}, {begin})                               AS t_lo,
+               least({t0} + 1, {begin} + w.window_months / 12.0)     AS t_hi
+        FROM reset_loans l
+        CROSS JOIN (SELECT unnest([{", ".join(map(str, WINDOWS_M))}]) AS window_months) w
+    )
+    SELECT
+        s.scenario,
+        x.window_months,
+        DATE '{start.isoformat()}'                   AS window_start,
+        x.activity_year                              AS orig_year,
+        x.lei,
+        x.holder_segment,
+        sum(x.t_hi - x.t_lo)                         AS w_loans,
+        sum((x.t_hi - x.t_lo) * x.loan_amount)       AS orig_amount,
+        sum(x.loan_amount * ({factor}) * {survival}) AS bal_at_reset
+    FROM spans x
+    CROSS JOIN dim_scenario s
+    LEFT JOIN dim_history_cpr h ON h.orig_year = x.activity_year
+    WHERE x.t_hi - x.t_lo > {MIN_WEIGHT}
+    GROUP BY ALL
+    """
+
+
 def build_reset_calendar(
     con: duckdb.DuckDBPyConnection, model: ModelConfig, segments: Segments
 ) -> dict[str, int]:
-    """Write ``fact_reset_calendar`` and ``qa_reset_inputs`` from ``stg_hmda``; returns their
-    row counts. Needs ``stg_hmda``, ``dim_purchaser_segment``, ``dim_scenario`` and
-    ``dim_history_cpr``. Lender types come from ``dim_hmda_lender``, or are unknown without
-    it."""
-    with_lenders = "dim_hmda_lender" in {name for name, _ in relations(con)}
-    con.execute(_loans_sql(segments, with_lenders))
+    """Write ``fact_reset_calendar``, ``fact_reset_window`` and ``qa_reset_inputs`` from
+    ``stg_hmda``; returns their row counts. Needs ``stg_hmda``, ``dim_purchaser_segment``,
+    ``dim_scenario`` and ``dim_history_cpr``. Lender types come from ``dim_hmda_lender``, or
+    are unknown without it. The windows start at the latest Call Report date, or at
+    ``model.as_of`` without Call Reports."""
+    names = {name for name, _ in relations(con)}
+    con.execute(_loans_sql(segments, "dim_hmda_lender" in names))
     # History runs from origination to as_of, so every loan must be originated by then.
     last = con.execute("SELECT max(activity_year) FROM reset_loans").fetchone()[0]
     if last is not None and year_fraction(model.as_of) < last + 1:
@@ -326,14 +374,17 @@ def build_reset_calendar(
         )
     con.execute(INPUTS_SQL)
     con.execute(_fact_sql(model))
+    start = model.as_of
+    if "dim_bank" in names:
+        start = con.execute("SELECT max(report_date) FROM dim_bank").fetchone()[0] or start
+    con.execute(_window_sql(model, start))
     con.execute("DROP TABLE reset_loans")
-    # A NaN or infinite balance would make every total it joins meaningless; stop instead.
-    bad = con.execute(
-        "SELECT count(*) FROM fact_reset_calendar WHERE NOT isfinite(bal_at_reset)"
-    ).fetchone()[0]
-    if bad:
-        raise ValueError(f"fact_reset_calendar: {bad} rows have a balance that isn't a number")
-    return {
-        name: con.execute(f"SELECT count(*) FROM {name}").fetchone()[0]
-        for name in ("fact_reset_calendar", "qa_reset_inputs")
-    }
+    tables = ("fact_reset_calendar", "fact_reset_window", "qa_reset_inputs")
+    for name in tables[:2]:
+        # A NaN or infinite balance would make every total it joins meaningless; stop instead.
+        bad = con.execute(
+            f"SELECT count(*) FROM {name} WHERE NOT isfinite(bal_at_reset)"
+        ).fetchone()[0]
+        if bad:
+            raise ValueError(f"{name}: {bad} rows have a balance that isn't a number")
+    return {name: con.execute(f"SELECT count(*) FROM {name}").fetchone()[0] for name in tables}

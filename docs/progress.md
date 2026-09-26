@@ -13,11 +13,11 @@ Where the build stands and what comes next. Claude Code keeps this page current 
 | 3 | HMDA 2021 and its lenders | Done |
 | – | Lender source for every year: the Philadelphia Fed HMDA Lender File | Done (user decision) |
 | 4 | HMDA all years, reset calendar model, coverage matrix | Done; survival split at the as-of date added after the review |
-| 5 | Streamlit pages 1–4 and 6 | **In progress** |
-| 6 | SQL console, optional NL-to-SQL | |
+| 5 | Streamlit pages 1–4 and 6 | **Done; checkpoint waiting on the user** |
+| 6 | SQL console, optional NL-to-SQL | Next, after the review |
 | 7 | Bloomberg import contract (optional) | |
 
-212 tests pass. All work is on the branch `claude/arm-reset-tool-build-0o47u0`, which is also
+229 tests pass. All work is on the branch `claude/arm-reset-tool-build-0o47u0`, which is also
 GitHub's default branch.
 
 ## Phase 4
@@ -46,16 +46,34 @@ What phase 4 did:
    Resets already past are the same in every scenario, and the scenarios move only what is
    still ahead.
 
-## Now: phase 5
+## Phase 5 checkpoint
 
-The Streamlit pages of PLAN.md §8, with a screenshot of each at the checkpoint:
-1. `armtool app`, with the reset calendar as the home page.
-2. Reset calendar: stacked bars by holder segment, the controls of §8, the coverage matrix
-   and a CSV download.
-3. Bank repricing: the industry buckets over time and the latest-quarter bank table.
-4. Bank drill-down, with the HMDA vs Call Report cross-check (§7.3).
-5. HMDA explorer.
-6. Methodology.
+PLAN.md §12 asks for a screenshot of each page. They were taken from `armtool app` against
+the full warehouse with headless Chrome, and shown to the user.
+
+What phase 5 did:
+1. **`armtool app`** runs `src/armreset/app/Home.py` from the project root; the reset
+   calendar is the home page. `.streamlit/config.toml` sets the palette for light and dark
+   mode, keeps the app on localhost and turns off Streamlit's usage statistics.
+2. **Reset calendar:** stacked bars by holder segment, with blue reserved for resets inside
+   the selected window. The page has the §8 controls, three stat tiles, the coverage matrix,
+   the exempt shares and a CSV download.
+3. **Bank repricing:** the buckets over time for the banks the filters keep. The
+   within-12-months share has its own chart, since a second axis would mislead. Below is
+   the latest-quarter bank table.
+4. **Bank drill-down:** one bank's buckets, nonaccrual, QA flags, HMDA lenders and ARM mix,
+   and the HMDA vs Call Report cross-check of §7.3. That needed a new table,
+   `fact_reset_window`, and a new view, `v_bank_reset_crosscheck`.
+5. **HMDA explorer:** ARM shares, months to first reset, the jumbo share, exempt shares and
+   the largest ARM lenders by year.
+6. **Methodology:** `docs/methodology.md`, with a new section on the cross-check and one on
+   reading the dashboard.
+7. **Tests:** Streamlit's AppTest runs every page against a fixture warehouse. Other tests
+   reconcile the page numbers with the warehouse.
+
+## Next: phase 6
+
+After the review: the SQL console and the optional NL-to-SQL (PLAN.md §8, page 5).
 
 ## Open items
 
@@ -83,6 +101,7 @@ uv run armtool fetch lenders    # Lender File, 15 MB
 uv run armtool fetch panel      # CFPB panels 2018-2023 and filers lists 2024-2025 (cross-check)
 uv run armtool fetch hmda       # 2018-2025, one year at a time: 25 GB of CSV, about 20 minutes
 uv run armtool build && uv run armtool validate
+uv run armtool app              # the dashboard, http://localhost:8501
 ```
 
 Keep at least 15 GB free: each year's CSV needs up to 6 GB while it converts. The Parquet files
@@ -132,13 +151,16 @@ for a bug.
 | 2026-09-25 | Reported rates above 20% and terms above 600 months are keying errors, filled like missing values. Claude's call, for the user's review. |
 | 2026-09-26 | Survival splits at `model.as_of`: each origination year's history CPR up to it, the scenario's CPR after it (the user chose this over one flat CPR per scenario). The history CPRs are Claude's placeholders until the user sets them. |
 | 2026-09-26 | The user reviewed the phase 4 checkpoint and asked for phase 5. |
+| 2026-09-26 | Dashboard design (Claude's call, following PLAN.md §8 and the dataviz guidance): one data hue, blue, which on the calendar marks only the selected window; no chart with two y-axes; at most five ordered series per chart, so the bank charts combine the two longest buckets. |
 
 ## Log
 
 Newest first.
 
-- **2026-09-26:** Survival splits at the as-of date: history CPRs by origination year, then
-  the scenario's CPR.
+- **2026-09-26:** Phase 5: the dashboard (`armtool app`), the cross-check table and view, and
+  the page tests. Checkpoint.
+- **2026-09-26 (5773ad8):** Survival splits at the as-of date: history CPRs by origination
+  year, then the scenario's CPR.
 - **2026-09-25 (9b029bb):** Phase 4 checkpoint: this page and the README's build status.
 - **2026-09-25 (47ed799):** Phase 4: HMDA 2018–2025, the first-reset calendar, the coverage
   matrix and the filled-rate counts.

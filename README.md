@@ -43,7 +43,15 @@ uv run armtool build                                   # staging, tables, reset 
 uv run armtool validate                                # data/qa_report.md, with the calendar
 uv run armtool status                                  # downloads, as-of dates, tables
 uv run armtool spotcheck 852218                        # one bank vs its filed Call Report
+uv run armtool app                                     # the dashboard, at http://localhost:8501
 ```
+
+**The dashboard** (`armtool app`, after `armtool build`) has five pages: the reset calendar
+(the home page), bank repricing, a bank drill-down with the HMDA vs Call Report cross-check,
+an HMDA explorer and the methodology. It listens on this machine only
+(`.streamlit/config.toml`); from Windows, open http://localhost:8501 while it runs in WSL.
+It reads the warehouse and never writes to it, so rebuild with `armtool build` and reload
+the page.
 
 **Quick start.** The full Call Report history takes about 12 minutes to download, and the
 eight HMDA years about 20. For a first look, fetch one quarter and one year:
@@ -73,7 +81,7 @@ the CDR bulk-data page into `data/raw/cdr/` and run `fetch cdr` again to record 
 | 2 | CDR history, `dim_bank`, CDR views | done |
 | 3 | HMDA 2021 and panel | done |
 | 4 | HMDA all years, reset calendar, coverage matrix | done |
-| 5 | Streamlit pages | in progress |
+| 5 | Streamlit pages | done; checkpoint under review |
 | 6 | SQL console, optional NL-to-SQL | |
 | 7 | Bloomberg import contract (optional) | |
 

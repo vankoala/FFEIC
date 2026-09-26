@@ -299,6 +299,17 @@ def reset_calendar_by_holder(
     return wide.sort("sort_key").select("reset year", *order["holder_segment"]).fill_null(0.0)
 
 
+def _years_text(years: list[int]) -> str:
+    """[2027, 2028] -> '2027-28'; runs of consecutive years shortened, the rest listed."""
+    runs: list[list[int]] = []
+    for y in years:
+        if runs and y == runs[-1][-1] + 1:
+            runs[-1].append(y)
+        else:
+            runs.append([y])
+    return ", ".join(str(r[0]) if len(r) == 1 else f"{r[0]}-{str(r[-1])[-2:]}" for r in runs)
+
+
 def _intro_label(intro_m: int) -> str:
     if intro_m == 1:
         return "1 month"
@@ -336,7 +347,7 @@ def reset_coverage_matrix(
             missing = [
                 y for y in range(cell["first_cohort"], cell["last_cohort"] + 1) if y not in loaded
             ]
-            gap = "✗ " + ", ".join(map(str, missing))
+            gap = "✗ " + _years_text(missing)
             text = {"complete": "✓", "missing": gap}.get(
                 cell["status"], f"{cell['coverage']:.0%} ({gap})"
             )

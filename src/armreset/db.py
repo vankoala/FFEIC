@@ -217,6 +217,41 @@ VIEWS: dict[str, tuple[frozenset[str], str]] = {
                ON oc.field = 'occupancy_type' AND oc.code = f.occupancy_type::VARCHAR
         """,
     ),
+    # PLAN.md §7.3, a diagnostic and never a sum: per bank in the latest quarter, the HMDA
+    # retained ARMs of its lenders (linked by the RSSD of their origination year) whose first
+    # reset falls within 12 months and 3 years of the report date, next to the bank's own
+    # within_12m and within_3y. HMDA should come in lower: the buckets also hold fixed-rate
+    # loans near maturity, purchased loans, pre-2018 ARMs and ARMs past their first reset.
+    "v_bank_reset_crosscheck": (
+        frozenset({"fact_reset_window", "dim_hmda_lender", "v_cdr_bank_latest"}),
+        """
+        WITH hmda AS (
+            SELECT w.scenario, l.respondent_rssd AS rssd_id,
+                   count(DISTINCT w.lei)                                   AS leis,
+                   sum(w.bal_at_reset) FILTER (WHERE w.window_months = 12) AS hmda_within_12m,
+                   sum(w.bal_at_reset) FILTER (WHERE w.window_months = 36) AS hmda_within_3y
+            FROM fact_reset_window w
+            JOIN dim_hmda_lender l ON l.activity_year = w.orig_year AND l.lei = w.lei
+            WHERE w.holder_segment = 'retained' AND l.respondent_rssd IS NOT NULL
+            GROUP BY ALL
+        )
+        SELECT
+            h.scenario,
+            b.rssd_id,
+            b.name,
+            b.state,
+            b.report_date,
+            h.leis,
+            b.within_12m,
+            coalesce(h.hmda_within_12m, 0)                              AS hmda_within_12m,
+            coalesce(h.hmda_within_12m, 0) / nullif(b.within_12m, 0)    AS ratio_12m,
+            b.within_3y,
+            coalesce(h.hmda_within_3y, 0)                               AS hmda_within_3y,
+            coalesce(h.hmda_within_3y, 0) / nullif(b.within_3y, 0)      AS ratio_3y
+        FROM hmda h
+        JOIN v_cdr_bank_latest b USING (rssd_id)
+        """,
+    ),
     # PLAN.md §7.2 step 5: one row per (reset_year, intro_m). coverage is the share of that
     # reset year's origination window that the loaded HMDA years hold, weighted as in the
     # calendar. Loans resetting in year Y after m months were originated in Y - m/12 or the

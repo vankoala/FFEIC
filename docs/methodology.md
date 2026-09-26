@@ -346,6 +346,39 @@ labels and `v_reset_coverage` says which reset years the data covers in full.
 - **These are modeled resets, not loans.** The rate after the first reset is unknown, so the
   note rate stands in for it.
 
+## HMDA vs Call Report cross-check
+
+PLAN.md §7.3. A diagnostic, never a sum: the view `v_bank_reset_crosscheck`, and the scatter
+on the bank drill-down page.
+
+- **For each bank that filed in the latest quarter,** the tool takes the retained ARMs of the
+  HMDA lenders whose RSSD, in the loan's origination year, is the bank's. It keeps the ones
+  whose first reset falls within 12 months and within 3 years of the latest report date
+  (`fact_reset_window`), with the calendar's balance model and CPRs.
+- **Next to them are the bank's own `within_12m` and `within_3y`.**
+- **HMDA should come in lower.** The Call Report buckets also hold fixed-rate loans near
+  maturity, loans the bank bought, ARMs from before 2018, and ARMs past their first reset,
+  which reprice every year. A bank above the line is the one to look at.
+- **Loans follow the RSSD of their origination year.** A bank that has since merged into
+  another doesn't file in the latest quarter, so its loans drop out of the check.
+- **In the build of 2026-09-26 (base scenario, windows from 2026-06-30):** 800 banks have
+  both figures for 12 months and 23 of them show more in HMDA; for 3 years, 856 and 34.
+  Across the 12-month banks, HMDA comes to 23.6% of the Call Report amount.
+
+## Reading the dashboard
+
+- **Blue marks the data in focus.** On the reset calendar it is reserved for resets inside
+  the selected window, in steps from the originator's own book (darkest) to unknown holders.
+  The rest of the calendar is gray.
+- **Two measures never share an axis.** The within-12-months share on the bank repricing
+  page has its own chart under the buckets.
+- **The bank repricing charts combine 5–15 years and over 15 years.** Six steps of one blue
+  can't all be told apart, so the charts show five; the tables keep all six buckets.
+- **The cross-check scatter leaves out amounts under $10k,** which are rounding for a bank.
+  The table of banks above the line keeps every bank.
+- **Every chart has a caption** with its source, as-of date and one caveat, and a table view
+  with its numbers.
+
 ## Known limitations
 
 ### Call Reports
@@ -375,6 +408,3 @@ labels and `v_reset_coverage` says which reset years the data covers in full.
 ### Across sources
 - **The sources overlap by design**, so the tool shows them side by side and never sums
   them.
-
-The HMDA vs Call Report cross-check (PLAN.md §7.3) comes with the bank drill-down page in
-phase 5.

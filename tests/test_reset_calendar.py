@@ -25,6 +25,7 @@ from armreset.model.reset_calendar import (
 from armreset.pipeline import build
 from armreset.qa import write_report
 from armreset.settings import ModelConfig, Settings, load_settings
+from tests.cdr_fixtures import make_cdr_zip
 from tests.conftest import REPO_ROOT
 from tests.hmda_fixtures import (
     BANK_LEI,
@@ -450,6 +451,46 @@ def test_subsequent_resets_roll_the_balance_forward(project: Path, patch_config)
     assert max(r["reset_year"] for r in later) <= 2033  # model.calendar_years ends in 2032
 
 
+def test_cross_check_windows_match_the_python_model(project: Path) -> None:
+    s = load_settings()
+    _record_book(s)
+    for key, stamp, period in [
+        ("cdr:2026Q1", "03312026", "2026-03-31"),
+        ("cdr:2026Q2", "06302026", "2026-06-30"),
+    ]:
+        zip_path = make_cdr_zip(s.raw_dir / "cdr", stamp=stamp)
+        Manifest.for_settings(s).record(key, "cdr", zip_path, period=period)
+    build(s)
+    con = connect(s, read_only=True)
+    try:
+        [row] = _rows(
+            con, "SELECT * FROM v_bank_reset_crosscheck WHERE scenario = 'base' AND rssd_id = 100"
+        )
+        starts = con.execute("SELECT DISTINCT window_start FROM fact_reset_window").fetchall()
+    finally:
+        con.close()
+    assert starts == [(date(2026, 6, 30),)]  # the latest Call Report
+    # BIG BANK (RSSD 100) is BANK_LEI's RSSD in both years. Its retained ARMs: every one in the
+    # book except L and C (sold to Fannie and Freddie) and K (another lender).
+    retained = {key: loan for key, loan in EXPECT.items() if key not in {"L", "C", "K"}}
+    start = year_fraction(date(2026, 6, 30))
+    for months, column in [(12, "hmda_within_12m"), (36, "hmda_within_3y")]:
+        expected = 0.0
+        for orig_year, intro, amount, rate, term, io in retained.values():
+            t0 = orig_year + intro / 12
+            t_lo, t_hi = max(t0, start), min(t0 + 1, start + months / 12)
+            if t_hi > t_lo:
+                history = s.model.history_cpr[orig_year]
+                share = survival_between(history, 0.10, intro, t_lo, t_hi, start)
+                expected += amount * sched_factor(rate, term, intro, io) * share
+        assert expected > 0
+        assert row[column] == pytest.approx(expected, rel=1e-9), months
+    # The bank's own buckets: $10k and $20k in the two short ones, $30k more within 3 years.
+    assert (row["within_12m"], row["within_3y"]) == (30_000, 60_000)
+    assert row["ratio_12m"] == pytest.approx(row["hmda_within_12m"] / 30_000)
+    assert row["leis"] == 1
+
+
 def test_without_the_lender_file_lender_types_are_unknown(project: Path) -> None:
     s = load_settings()
     _record_book(s, lender_file=False)
@@ -491,6 +532,14 @@ def test_qa_report_shows_the_phase_4_checkpoint(built: Settings) -> None:
         "| 2021 | 12 | 8 | 1 | 2 | 1 | 1 | 0 |",
     ):
         assert expected in text, expected
+
+
+def test_missing_years_are_shortened_to_ranges() -> None:
+    from armreset.qa import _years_text
+
+    assert _years_text([2016]) == "2016"
+    assert _years_text([2027, 2028]) == "2027-28"
+    assert _years_text([2016, 2018, 2019]) == "2016, 2018-19"
 
 
 def test_a_balance_that_is_not_a_number_stops_the_build(project: Path) -> None:

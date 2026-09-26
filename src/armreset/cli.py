@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import logging
+import os
+import subprocess
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Annotated
@@ -21,7 +24,7 @@ from armreset.periods import (
     parse_years,
     quarter_range,
 )
-from armreset.settings import FIRST_HMDA_YEAR, Settings, load_settings
+from armreset.settings import CONFIG_ENV_VAR, FIRST_HMDA_YEAR, Settings, load_settings
 
 app = typer.Typer(
     help="ARM reset exposure: FFIEC Call Reports and HMDA, side by side, never summed.",
@@ -90,14 +93,6 @@ def main(
         datefmt="%H:%M:%S",
     )
     ctx.obj = _State(config=config)
-
-
-def _not_implemented(command: str, phase: int) -> None:
-    err_console.print(
-        f"[yellow]`armtool {command}` is not implemented yet; it arrives in phase {phase} "
-        "(PLAN.md §12).[/yellow]"
-    )
-    raise typer.Exit(code=1)
 
 
 def _is_latest(spec: str) -> bool:
@@ -486,10 +481,22 @@ def spotcheck(
 
 
 @app.command("app")
-def run_app(ctx: typer.Context) -> None:
+def run_app(
+    ctx: typer.Context,
+    port: Annotated[int, typer.Option(help="Port for the dashboard.")] = 8501,
+) -> None:
     """Launch the Streamlit dashboard."""
-    _settings(ctx)
-    _not_implemented("app", 5)
+    s = _settings(ctx)
+    if not s.warehouse_path.exists():
+        err_console.print("No warehouse yet. Run `armtool build` first.")
+        raise typer.Exit(code=1)
+    home = Path(__file__).parent / "app" / "Home.py"
+    # From the project root, so Streamlit finds .streamlit/config.toml; the config path goes
+    # through the environment so the app reads the same settings.
+    env = {**os.environ, CONFIG_ENV_VAR: str(s.config_path)}
+    command = [sys.executable, "-m", "streamlit", "run", str(home), "--server.port", str(port)]
+    console.print(f"Starting the dashboard on port {port} (Ctrl+C stops it)")
+    raise typer.Exit(code=subprocess.call(command, env=env, cwd=s.root))
 
 
 def _relative(path: Path, root: Path) -> str:
