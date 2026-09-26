@@ -1,9 +1,9 @@
-"""``config/segments.yaml``: HMDA purchaser_type -> holder segment, and the Lender File's
-institution type -> lender type."""
+"""``config/segments.yaml``: HMDA purchaser_type -> holder segment, the Lender File's
+institution type -> lender type, and readable labels for codes."""
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -18,6 +18,7 @@ class Segments:
     institution_types: dict[int, tuple[str, str]]  # TYPE code -> (lender_type, label)
     unknown_lender_type: str
     call_report_filer_type: str  # overrides the code when the RSSD files a Call Report
+    code_labels: dict[str, dict[str, str]] = field(default_factory=dict)  # field -> code -> label
 
     @classmethod
     def load(cls, path: Path) -> Segments:
@@ -37,12 +38,17 @@ class Segments:
                         f"institution type {code} is in both {types[code][0]} and {lender_type}"
                     )
                 types[int(code)] = (lender_type, label)
+        labels = {
+            name: {str(code): str(label) for code, label in codes.items()}
+            for name, codes in (raw.get("code_labels") or {}).items()
+        }
         return cls(
             holder,
             raw.get("unmapped_segment", "unmapped"),
             types,
             raw.get("unknown_lender_type", "unknown"),
             raw.get("call_report_filer_type", "bank"),
+            labels,
         )
 
     def purchaser_table(self) -> pl.DataFrame:
@@ -72,6 +78,17 @@ class Segments:
                 "lender_type": pl.Utf8,
             },
         ).sort("institution_type")
+
+    def label_table(self) -> pl.DataFrame:
+        """``dim_code_label``: one row per field and code, with its readable label."""
+        return pl.DataFrame(
+            [
+                {"field": name, "code": code, "label": label}
+                for name, codes in self.code_labels.items()
+                for code, label in codes.items()
+            ],
+            schema={"field": pl.Utf8, "code": pl.Utf8, "label": pl.Utf8},
+        )
 
     def type_from_code(self, column: str = "institution_type") -> pl.Expr:
         """Map an integer TYPE column to a lender type; unlisted or null codes are unknown."""

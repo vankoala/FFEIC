@@ -30,6 +30,14 @@ Within each source, the tool also makes sure the same loans never appear twice:
 - **Each lender-year comes from one source:** the Philadelphia Fed HMDA Lender File, with one
   row per lender and year. The CFPB's lender lists are only a cross-check.
 - **Nothing is downloaded twice.** A file recorded in the manifest is never fetched again.
+- **Each ARM counts once in the reset calendar.** Its first reset is split across at most two
+  calendar years, with shares that add up to 1. In each scenario the shares of all ARMs add
+  up to their number: 3,225,980 in 2018–2025 (`docs/verification.md`). The tests check it on
+  every change.
+- **Each scenario holds every loan once, so never add scenarios together.** Each row of the
+  calendar names its scenario; pick one.
+- **Subsequent resets, off by default, count resets rather than loans.** Turned on, a loan
+  appears once per reset, so a total across reset years counts resets.
 
 ## Call Report repricing wall
 
@@ -226,6 +234,96 @@ Two notes on ARMs:
 - **In 2021, every lender typed `bank` is linked.** Linked lenders originated 81% of that
   year's ARM dollars.
 
+## First-reset calendar
+
+The calendar places every HMDA ARM in the calendar year of its first rate reset (PLAN.md
+§7.2). `armtool build` writes it to `fact_reset_calendar`; `v_reset_calendar` adds readable
+labels and `v_reset_coverage` says which reset years the data covers in full.
+
+### Which loans
+
+- **ARMs only:** `rate_type = 'arm'`, a positive intro period shorter than the loan term.
+  3,225,980 loans in 2018–2025.
+- **Exempt rows can't be placed,** because their intro period is unknown. They are 1.8% to
+  3.9% of each year's loans; the QA report shows the share by year.
+
+### When the first reset comes
+
+- **Public HMDA gives the origination year, not the date.** Origination dates are assumed to
+  be spread evenly over the year.
+- **The first reset comes `intro_m` months after origination.** So a loan's reset falls in at
+  most two calendar years. A 2021 loan with a 60-month intro resets in 2026; with a 6-month
+  intro, half in 2021 and half in 2022.
+- **The two shares add up to 1,** so each loan counts once.
+
+### How much balance reaches it
+
+`bal_at_reset = loan_amount × A(k) × S(k)`, where k is `intro_m`, the months to the reset:
+- **A(k) is scheduled amortization:** the share of the original balance left after k
+  level payments at the note rate over the loan term. At a zero rate it falls in a straight
+  line.
+- **S(k) is survival, `(1 − CPR)^(k/12)`.** CPR is an annual rate of prepayment and default
+  together.
+- **The CPR scenarios are assumptions, not estimates.** `model.scenarios` in config.yaml holds
+  low 6%, base 10% and high 15%, the placeholders from PLAN.md §10. `dim_scenario` and
+  `v_reset_calendar` (`cpr_assumption`) carry the rate behind every number.
+- **Interest-only ARMs are assumed to stay interest-only through the first reset,** so A(k)
+  is 1 for them. HMDA doesn't report the interest-only period. They are 29% of ARM dollars in
+  2018–2025, from 20.6% to 40.5% by year, so this assumption moves the totals.
+- **`loan_amount` is the midpoint of a $10k band,** as HMDA publishes it.
+
+### Missing and implausible rates and terms
+
+- **A missing interest rate takes the median** of the ARMs with a rate in the same origination
+  year, intro_m bucket and conforming status (PLAN.md §7.2). If that group has no rate, the
+  median for the year and bucket is used, then the year's.
+- **A missing loan term is filled the same way.** The filled term is one that some loan in the
+  group actually has.
+- **A reported rate above 20%, or a term above 600 months, counts as missing.** No ARM in
+  2018–2025 reports a rate between 17.5% and 29.25%. The 19 above include 362,500 and 5,125,
+  which are 3.625% and 5.125% typed without the decimal point. 100 of the 116 terms over 600
+  months are 999.
+- **Every fill is counted.** 3,664 ARMs (0.1%) have a filled rate and 1,747 a filled term.
+  `qa_reset_inputs` counts them by year, intro_m bucket and conforming status, and
+  `v_reset_calendar` flags them in `rate_filled` and `term_filled`.
+
+### Holder and lender
+
+- **`holder_segment`** is the holder at origination, from `purchaser_type` (see "Holder at
+  origination" above).
+- **`lender_type`** comes from the Lender File for the origination year. A lender missing
+  from the file would be `unknown`, but in 2018–2025 every lender with loans is in it.
+
+### Coverage
+
+- **A reset year is complete for an intro period only when every origination year behind it
+  is loaded.** Loans that reset in year Y after m months were originated in Y − m/12 or the
+  year before. An intro period that isn't a whole number of years draws on two origination
+  years.
+- **`v_reset_coverage` gives the loaded share** for every reset year and intro period, with
+  the origination years it needs. The QA report shows the matrix for 2026–2032.
+- **With 2018–2025 loaded:**
+  - 7-year ARMs (84 months) are complete for every reset year from 2025 to 2032.
+  - 5-year ARMs are complete through 2030, and 3-year ARMs through 2028. Later resets come
+    from originations not yet published.
+  - 10-year ARMs resetting in 2026 or 2027 come from 2016–2017 originations, which HMDA
+    doesn't have, and 15-year ARMs resetting before 2033 all do.
+- **Lenders below HMDA's reporting thresholds don't file,** so their loans are absent from
+  every year.
+- **The current year's bar includes resets that already happened** earlier in the year.
+  `is_current_year` flags the year of `model.as_of` (2026).
+
+### Subsequent resets (off by default)
+
+- **After its first reset, an ARM resets every 6 or 12 months.** HMDA doesn't record the
+  frequency, so `model.subsequent_resets.frequency_months` sets it (12).
+- **Turned on, the calendar adds a row for each later reset** (`reset_kind = 'subsequent'`),
+  up to the last calendar year. The balance keeps amortizing at the note rate and surviving at
+  the scenario's CPR. Interest-only loans start amortizing over the rest of their term at the
+  first reset.
+- **These are modeled resets, not loans.** The rate after the first reset is unknown, so the
+  note rate stands in for it.
+
 ## Known limitations
 
 ### Call Reports
@@ -236,7 +334,8 @@ Two notes on ARMs:
 - **Credit unions are absent from the Call Report layer.**
 
 ### HMDA
-- **Covers originations only;** balances at reset are modeled (phase 4).
+- **Covers originations only;** balances at reset are modeled.
+- **CPR is an assumption.** The scenarios are placeholders until you set your own.
 - **No origination month**, only the year.
 - **Interest-only length is unknown.** A small number of loans have an exempt
   interest-only flag but a reported intro period; they count as not interest-only.
@@ -254,4 +353,5 @@ Two notes on ARMs:
 - **The sources overlap by design**, so the tool shows them side by side and never sums
   them.
 
-The first-reset calendar, the coverage matrix and the cross-checks are added in phase 4.
+The HMDA vs Call Report cross-check (PLAN.md §7.3) comes with the bank drill-down page in
+phase 5.

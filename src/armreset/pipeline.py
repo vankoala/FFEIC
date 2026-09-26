@@ -15,6 +15,7 @@ from armreset.ingest.hmda import StagedYear, stage_year, staged_years, stg_dir
 from armreset.ingest.lenders import build_dim_hmda_lender
 from armreset.manifest import Manifest
 from armreset.model.repricing import build_dim_bank, build_fact, qa_flags
+from armreset.model.reset_calendar import build_reset_calendar, scenario_table
 from armreset.segments import Segments
 from armreset.settings import Settings
 
@@ -113,7 +114,10 @@ def build(settings: Settings, force: bool = False) -> BuildSummary:
     params = {"unmapped_segment": segments.unmapped}
     if staged_years(settings):
         tables["dim_purchaser_segment"] = segments.purchaser_table()
+        tables["dim_scenario"] = scenario_table(settings.model)
+        tables["dim_code_label"] = segments.label_table()
         params["stg_hmda_glob"] = (stg_dir(settings) / "activity_year=*" / "*.parquet").as_posix()
+        params["as_of_year"] = str(settings.model.as_of.year)
 
     if not tables:
         return summary
@@ -123,6 +127,10 @@ def build(settings: Settings, force: bool = False) -> BuildSummary:
         for name, df in tables.items():
             summary.tables[name] = replace_table(con, name, df)
         summary.views = create_views(con, params)
+        if "stg_hmda" in summary.views:
+            # The reset calendar reads stg_hmda, so it follows the first round of views.
+            summary.tables |= build_reset_calendar(con, settings.model, segments)
+            summary.views = create_views(con, params)
         con.commit()
     except Exception:
         con.rollback()

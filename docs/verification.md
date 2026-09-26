@@ -26,6 +26,122 @@ Status key:
 | §5.2 | `intro_m` histogram clusters near 12, 36, 60, 84 and 120 | phase 3 | **confirmed** for 36–120; 180 and 1 month are also real clusters |
 | §11 | One large bank's six buckets match its Call Report PDF | phase 1 | **passed**: JPMorgan Chase Bank, 2026-06-30 |
 | §5.3 | Lender source: the Philadelphia Fed HMDA Lender File replaces the panel (user decision) | before phase 4 | **adjusted**: one row per lender-year, 2018–2025; a Call Report filer is a bank |
+| 5, 6, 8 | The 2021 layout in every year, 2018–2025 | phase 4 | **confirmed**, except that `1111` appears in `intro_rate_period` in 2018–2020; staging already reads it as exempt |
+| – | Lenders in the Lender File but not the Data Browser filers list, 2024–2025 | phase 4 | **resolved**: their loans are in the downloads |
+| §7.2 | Reported rates and terms in the reset calendar | phase 4 | **adjusted**: rates above 20% and terms above 600 months are keying errors, filled like missing values |
+
+## Phase 4 (2026-09-25): HMDA 2018–2025 and the reset calendar
+
+### The HMDA downloads, every year
+
+`armtool fetch hmda` downloaded the seven years not yet recorded, one at a time: 14 requests to
+ffiec.cfpb.gov and files.ffiec.cfpb.gov, a redirect and a file per year, at least 5 s apart.
+Each CSV was converted to Parquet and then deleted. 2021 came from the rebuild on this machine.
+
+| Year | Dataset served | CSV bytes | Seconds | Rows | Rows staged |
+|---|---|---|---|---|---|
+| 2018 | three-year | 2,612,294,020 | 100 | 6,607,210 | 6,194,513 |
+| 2019 | three-year | 3,270,737,363 | 133 | 8,260,531 | 7,876,637 |
+| 2020 | three-year | 5,325,133,619 | 208 | 13,779,110 | 13,421,282 |
+| 2021 | three-year | 5,478,739,820 | 309 | 14,154,790 | 13,772,373 |
+| 2022 | three-year | 2,695,696,213 | 108 | 6,971,235 | 6,571,779 |
+| 2023 | one-year | 1,699,841,829 | 70 | 4,387,571 | 4,116,667 |
+| 2024 | one-year | 1,836,493,783 | 75 | 4,770,735 | 4,492,896 |
+| 2025 | snapshot | 2,021,698,878 | 87 | 5,269,688 | 4,926,972 |
+
+- **The dataset is named in the redirect.** `/view/nationwide/csv` answers 301 to
+  `files.ffiec.cfpb.gov/data-browser/datasets/<year>/filtered-queries/<dataset>/<hash>.csv`,
+  and the manifest keeps that URL.
+  - 2018–2022 come from the three-year datasets, 2023–2024 from the one-year datasets, and
+    2025 from the snapshot.
+  - The Data Browser serves a newer dataset once it's published. A recorded year is never
+    downloaded again; to pick up a newer dataset, delete the year's Parquet file and manifest
+    entry, then fetch the year again.
+- **The 2021 file matches the first build exactly:** same bytes and rows, from the same
+  three-year file.
+- **In all, 24.9 GB of CSV and 64,200,870 rows.** Staging keeps 61,373,119 loans (95.6%). It
+  drops open-end lines, reverse mortgages and multifamily loans, as in phase 3.
+
+### The 2021 layout holds in every year (items 5, 6 and 8)
+
+Checked on every row of each year's raw Parquet file:
+
+| Check | Result, 2018–2025 |
+|---|---|
+| Columns | The same 99 columns, in the same order |
+| `activity_year` | Always the file's year |
+| The two source filters (item 5) | Every row has `action_taken` 1 and `lien_status` 1 |
+| Values of `intro_rate_period` that aren't integers (item 6) | Only `NA` and `Exempt` |
+| `loan_amount` (item 8) | Every row is a $10k-band midpoint |
+| Leading zeros in `intro_rate_period` | 2021 (14,750 rows) and 2023 (10,853); `TRY_CAST` reads them |
+
+- **Item 6, adjusted: `1111` does appear in `intro_rate_period` in 2018–2020.** There are 636
+  rows in 2018, 581 in 2019 and 388 in 2020, and none from 2021 on.
+  - It's the exemption code of the coded fields, typed into a numeric one. No loan has a
+    1,111-month intro period.
+  - The staging `CASE` from PLAN.md already maps `1111` to `unknown`, so these rows count as
+    exempt, not as ARMs. The code doesn't change.
+
+### Lenders the Data Browser filers list lacks (open item, resolved)
+
+The question: for 2024 and 2025, the Lender File lists lenders that the Data Browser filers
+lists don't. Are their loans in the downloads?
+
+- **Yes.** The filers list leaves them out, but the loan file has every one of them that
+  originated a first lien:
+  - **2024:** all 18 lenders, with 17,202 originated first-lien loans. The largest are
+    Neighborhood Loans (8,202) and Mega Capital Funding (6,623).
+  - **2025:** 120 of the 122 lenders, with 30,191 loans. The other two, Saxton Mortgage and
+    SRH Capital, originated nothing that year: the Lender File's `ORIG` is 0 for both.
+- **The filers list is the incomplete list.** The loan files hold 18 LEIs in 2024 and 120 in
+  2025 that it lacks.
+- **Every LEI in the 2018–2025 loan files is in the Lender File.** `v_bank_hmda_link` has no
+  `not_in_lender_file` lender with loans in any year, so every loan in the calendar has a
+  lender type from the file.
+- **Checked** against the Lender File's `LAR`, `LARSNAP` and `ORIG` columns, the two filers
+  lists and the raw loan files; no request went out. The code doesn't change.
+
+### Reported rates and terms that can't be right
+
+- **One ARM broke the first build of the calendar.** A 2019 7-year ARM reports an interest
+  rate of 362,500. At that rate (1 + i)^360 overflows. Its balance at reset became NaN, the
+  NaN spread to every total it joined, and the 2026 bar showed no balance.
+- **The reported rates have a natural break.** Of the 3,222,335 ARMs with a rate:
+
+  | Reported rate | ARMs |
+  |---|---|
+  | 10% or less | 3,217,400 |
+  | Over 10%, up to 15% | 4,896 |
+  | 15.125% to 17.5% | 20 |
+  | Over 17.5%, under 29.25% | 0 |
+  | 29.25% to 362,500 | 19 |
+
+  The 19 include 362,500, 5,125, 3,125 and 2,875: that is, 3.625%, 5.125%, 3.125% and 2.875%
+  typed without the decimal point.
+- **So do the terms.** Of the 3,224,349 ARMs with a term, all but 121 have 480 months or
+  less. 5 have 540–600 months, and 116 have more: 100 of them 999, the rest up to 3,690.
+- **Changes:**
+  - **A reported rate above 20% or a term above 600 months is a keying error.** The model
+    treats it like a missing value and fills it with the median (PLAN.md §7.2). That's 19
+    rates and 116 terms. `qa_reset_inputs` counts them in `rate_out_of_range` and
+    `term_out_of_range`.
+  - **The SQL amortization factor can't overflow.** It computes (1 − g^(k−n)) / (1 − g^−n),
+    the plan's formula divided through by g^n, whose powers stay below 1. It matches the
+    plan's Python formula to 1e-12 on every test case.
+  - **`armtool build` stops if any balance at reset isn't a finite number,** instead of
+    writing a total that can't be trusted.
+
+### The calendar, checked on the full data
+
+- **Every ARM counts once in each scenario.** In each of the three scenarios the reset
+  weights add up to 3,225,980, the number of ARMs in `stg_hmda`, and the original amounts to
+  their staged total, within $0.001.
+- **No balance at reset is missing, infinite, or above the loan's original amount.**
+- **`v_reset_calendar` has exactly the rows of `fact_reset_calendar`** (1,417,203), so its
+  label joins repeat nothing.
+- **Coverage matches PLAN.md's examples.** 10-year ARMs resetting in 2026 and 2027 need 2016
+  and 2017 originations, and 3-year ARMs resetting in 2029 or later need originations not yet
+  published; `v_reset_coverage` marks all of them missing.
 
 ## Lender source (2026-09-25): the Philadelphia Fed HMDA Lender File
 

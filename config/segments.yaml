@@ -69,3 +69,22 @@ lender_types:
   independent_mortgage_company:
     40: independent mortgage bank
 unknown_lender_type: unknown
+
+# Readable labels for v_reset_calendar, by field and code (dim_code_label). The HMDA codes'
+# meanings are from the public LAR data dictionary.
+code_labels:
+  lender_type:
+    bank: Bank or savings association
+    bank_affiliate: Bank affiliate
+    credit_union: Credit union
+    independent_mortgage_company: Independent mortgage company
+    unknown: Unknown
+  conforming_loan_limit:
+    C: Conforming
+    NC: Jumbo (nonconforming)
+    U: Undetermined
+    NA: Not applicable
+  occupancy_type:
+    1: Principal residence
+    2: Second residence
+    3: Investment property

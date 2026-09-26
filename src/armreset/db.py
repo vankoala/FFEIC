@@ -165,6 +165,86 @@ VIEWS: dict[str, tuple[frozenset[str], str]] = {
                ON c.rssd_id = l.respondent_rssd AND c.activity_year = l.activity_year
         """,
     ),
+    # fact_reset_calendar with readable labels and the scenario's CPR, an assumption. Each
+    # scenario holds every loan once: filter to one scenario, never add scenarios together.
+    # The current year's bar includes resets that already happened earlier in the year.
+    "v_reset_calendar": (
+        frozenset(
+            {"fact_reset_calendar", "dim_scenario", "dim_purchaser_segment", "dim_code_label"}
+        ),
+        """
+        SELECT
+            f.scenario,
+            s.cpr                                           AS cpr_assumption,
+            f.reset_kind,
+            f.reset_year,
+            f.reset_year = {as_of_year}                     AS is_current_year,
+            f.orig_year,
+            f.intro_m,
+            f.holder_segment,
+            coalesce(h.holder_label, f.holder_segment)      AS holder_label,
+            f.lender_type,
+            coalesce(lt.label, f.lender_type)               AS lender_type_label,
+            f.conforming,
+            coalesce(cf.label, f.conforming)                AS conforming_label,
+            f.occupancy_type,
+            coalesce(oc.label, f.occupancy_type::VARCHAR)   AS occupancy_label,
+            f.state_code,
+            f.lei,
+            f.is_io,
+            f.rate_filled,
+            f.term_filled,
+            f.w_loans,
+            f.orig_amount,
+            f.bal_at_reset
+        FROM fact_reset_calendar f
+        JOIN dim_scenario s USING (scenario)
+        LEFT JOIN (SELECT DISTINCT holder_segment, holder_label FROM dim_purchaser_segment) h
+               USING (holder_segment)
+        LEFT JOIN dim_code_label lt ON lt.field = 'lender_type' AND lt.code = f.lender_type
+        LEFT JOIN dim_code_label cf
+               ON cf.field = 'conforming_loan_limit' AND cf.code = f.conforming
+        LEFT JOIN dim_code_label oc
+               ON oc.field = 'occupancy_type' AND oc.code = f.occupancy_type::VARCHAR
+        """,
+    ),
+    # PLAN.md §7.2 step 5: one row per (reset_year, intro_m). coverage is the share of that
+    # reset year's origination window that the loaded HMDA years hold, weighted as in the
+    # calendar. Loans resetting in year Y after m months were originated in Y - m/12 or the
+    # year before; a missing origination year leaves its share of the bar empty.
+    "v_reset_coverage": (
+        frozenset({"stg_hmda", "fact_reset_calendar"}),
+        """
+        WITH cohorts AS (SELECT DISTINCT activity_year AS cohort FROM stg_hmda),
+        first_resets AS (SELECT * FROM fact_reset_calendar WHERE reset_kind = 'first'),
+        cells AS (
+            SELECT y.reset_year, i.intro_m
+            FROM (SELECT DISTINCT reset_year FROM first_resets) y
+            CROSS JOIN (SELECT DISTINCT intro_m FROM first_resets) i
+        ),
+        timed AS (
+            SELECT c.reset_year, c.intro_m, h.cohort + c.intro_m / 12.0 AS t0
+            FROM cells c CROSS JOIN cohorts h
+        ),
+        shares AS (
+            SELECT reset_year, intro_m,
+                   sum(CASE WHEN floor(t0) = reset_year     THEN floor(t0) + 1 - t0
+                            WHEN floor(t0) + 1 = reset_year THEN t0 - floor(t0)
+                            ELSE 0 END)                     AS coverage
+            FROM timed GROUP BY ALL
+        )
+        SELECT
+            reset_year,
+            intro_m,
+            CAST(floor(reset_year - intro_m / 12.0) AS INTEGER)        AS first_cohort,
+            CAST(ceil(reset_year + 1 - intro_m / 12.0) AS INTEGER) - 1 AS last_cohort,
+            coverage,
+            CASE WHEN coverage >= 1 - 1e-9 THEN 'complete'
+                 WHEN coverage <= 1e-9     THEN 'missing'
+                 ELSE 'partial' END                         AS status
+        FROM shares
+        """,
+    ),
 }
 
 

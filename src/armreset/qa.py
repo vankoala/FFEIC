@@ -17,6 +17,7 @@ import polars as pl
 from armreset.db import connect, relations
 from armreset.ingest.cdr import MdrmSpec
 from armreset.model.repricing import HIGH_NONACCRUAL_SHARE, ROUNDING_TOLERANCE_USD
+from armreset.model.reset_calendar import FILL_SOURCES, INTRO_BUCKET_SQL
 from armreset.segments import Segments
 from armreset.settings import Settings
 
@@ -111,16 +112,6 @@ def markdown_table(df: pl.DataFrame) -> str:
         for row in df.iter_rows()
     ]
     return "\n".join([header, rule, *rows])
-
-
-INTRO_BUCKET_SQL = """
-    CASE WHEN intro_m < 12 THEN '01-11' WHEN intro_m = 12 THEN '12'
-         WHEN intro_m < 36 THEN '13-35' WHEN intro_m = 36 THEN '36'
-         WHEN intro_m < 60 THEN '37-59' WHEN intro_m = 60 THEN '60'
-         WHEN intro_m < 84 THEN '61-83' WHEN intro_m = 84 THEN '84'
-         WHEN intro_m < 120 THEN '85-119' WHEN intro_m = 120 THEN '120'
-         WHEN intro_m < 180 THEN '121-179' WHEN intro_m = 180 THEN '180'
-         ELSE '181+' END"""
 
 
 def hmda_year_stats(con: duckdb.DuckDBPyConnection) -> pl.DataFrame:
@@ -253,6 +244,221 @@ def lender_file_coverage(settings: Settings, con: duckdb.DuckDBPyConnection) -> 
     )
 
 
+def _sql_str(value: str) -> str:
+    return "'" + value.replace("'", "''") + "'"
+
+
+def _percent(cpr: float) -> str:
+    return f"{cpr * 100:g}%"
+
+
+def reset_calendar_by_scenario(
+    con: duckdb.DuckDBPyConnection, first: int, last: int, as_of_year: int
+) -> pl.DataFrame:
+    """First resets by reset year: the weighted ARM count and original amount, which every
+    scenario shares, then the balance at reset under each CPR scenario. The current year is
+    marked with an asterisk."""
+    scenarios = con.sql("SELECT scenario, cpr FROM dim_scenario ORDER BY cpr, scenario").fetchall()
+    one = _sql_str(scenarios[0][0])  # every scenario holds every loan once
+    balances = [
+        f"sum(bal_at_reset) FILTER (WHERE scenario = {_sql_str(name)}) / 1e9 "
+        f'AS "{name}, {_percent(cpr)} CPR: balance $bn"'
+        for name, cpr in scenarios
+    ]
+    return con.execute(
+        f"""
+        SELECT CASE WHEN reset_year = ? THEN reset_year::VARCHAR || ' *'
+                    ELSE reset_year::VARCHAR END                         AS "reset year",
+               round(sum(w_loans) FILTER (WHERE scenario = {one}))::BIGINT AS "ARM loans",
+               sum(orig_amount) FILTER (WHERE scenario = {one}) / 1e9     AS "original $bn",
+               {", ".join(balances)}
+        FROM fact_reset_calendar
+        WHERE reset_kind = 'first' AND reset_year BETWEEN ? AND ?
+        GROUP BY reset_year ORDER BY reset_year
+        """,
+        [as_of_year, first, last],
+    ).pl()
+
+
+def reset_calendar_by_holder(
+    con: duckdb.DuckDBPyConnection, scenario: str, first: int, last: int
+) -> pl.DataFrame:
+    """Balance at reset ($bn) by reset year and holder segment, for one scenario."""
+    long = con.execute(
+        """
+        SELECT reset_year::VARCHAR AS "reset year", holder_segment,
+               sum(bal_at_reset) / 1e9 AS bal, min(reset_year) AS sort_key
+        FROM fact_reset_calendar
+        WHERE reset_kind = 'first' AND scenario = ? AND reset_year BETWEEN ? AND ?
+        GROUP BY ALL
+        """,
+        [scenario, first, last],
+    ).pl()
+    order = long.group_by("holder_segment").agg(pl.col("bal").sum()).sort("bal", descending=True)
+    wide = long.pivot(on="holder_segment", index=["reset year", "sort_key"], values="bal")
+    return wide.sort("sort_key").select("reset year", *order["holder_segment"]).fill_null(0.0)
+
+
+def _intro_label(intro_m: int) -> str:
+    if intro_m == 1:
+        return "1 month"
+    return f"{intro_m} ({intro_m // 12} yr)" if intro_m % 12 == 0 else f"{intro_m} months"
+
+
+def reset_coverage_matrix(
+    con: duckdb.DuckDBPyConnection, first: int, last: int, as_of_year: int, min_share: float
+) -> tuple[pl.DataFrame, float]:
+    """PLAN.md §7.2 step 5 as a table: one row per intro period holding at least
+    ``min_share`` of ARM dollars, one column per reset year. A cell is ✓ when every
+    origination year behind it is loaded; otherwise it names the missing years. Also returns
+    the share of ARM dollars in the intro periods left out."""
+    one = con.sql("SELECT min(scenario) FROM dim_scenario").fetchone()[0]
+    shares = con.execute(
+        """
+        SELECT intro_m, sum(orig_amount) / sum(sum(orig_amount)) OVER () AS share
+        FROM fact_reset_calendar WHERE reset_kind = 'first' AND scenario = ?
+        GROUP BY intro_m ORDER BY intro_m
+        """,
+        [one],
+    ).pl()
+    shown = shares.filter(pl.col("share") >= min_share)
+    loaded = {y for (y,) in con.sql("SELECT DISTINCT activity_year FROM stg_hmda").fetchall()}
+    cells = con.execute(
+        "SELECT * FROM v_reset_coverage WHERE reset_year BETWEEN ? AND ?", [first, last]
+    ).pl()
+    rows = []
+    for intro_m, share in shown.iter_rows():
+        row: dict[str, object] = {"months to first reset": _intro_label(intro_m)}
+        row["share of ARM $"] = share
+        for cell in (
+            cells.filter(pl.col("intro_m") == intro_m).sort("reset_year").iter_rows(named=True)
+        ):
+            missing = [
+                y for y in range(cell["first_cohort"], cell["last_cohort"] + 1) if y not in loaded
+            ]
+            gap = "✗ " + ", ".join(map(str, missing))
+            text = {"complete": "✓", "missing": gap}.get(
+                cell["status"], f"{cell['coverage']:.0%} ({gap})"
+            )
+            header = f"{cell['reset_year']} *" if cell["reset_year"] == as_of_year else None
+            row[header or str(cell["reset_year"])] = text
+        rows.append(row)
+    return pl.DataFrame(rows), 1 - shown["share"].sum()
+
+
+def _fill_group(source: str) -> str:
+    """'median: activity_year, intro_bucket' -> 'year, intro bucket'."""
+    group = source.removeprefix("median: ")
+    return group.replace("activity_year", "year").replace("intro_bucket", "intro bucket")
+
+
+def reset_input_counts(con: duckdb.DuckDBPyConnection) -> pl.DataFrame:
+    """Filled-rate counts by origination year (PLAN.md §11), with the filled terms and the
+    interest-only ARMs that the IO assumption applies to."""
+    by_source = ",\n".join(
+        f"coalesce(sum(rate_filled) FILTER (WHERE rate_fill_source = {_sql_str(source)}), 0) "
+        f'AS "filled: {_fill_group(source)}"'
+        for source in FILL_SOURCES
+    )
+    return con.sql(
+        f"""
+        SELECT activity_year                          AS year,
+               sum(arm_loans)                         AS "ARM loans",
+               sum(rate_reported)                     AS "rate reported",
+               sum(rate_out_of_range)                 AS "rate out of range",
+               {by_source},
+               sum(rate_missing)                      AS "no rate",
+               sum(rate_filled) / sum(arm_loans)      AS "filled share",
+               sum(term_out_of_range)                 AS "term out of range",
+               sum(term_filled)                       AS "term filled",
+               sum(io_loans)                          AS "interest-only",
+               sum(io_amount) / sum(arm_amount)       AS "interest-only share ($)"
+        FROM qa_reset_inputs GROUP BY ALL ORDER BY year
+        """
+    ).pl()
+
+
+def reset_calendar_sections(settings: Settings, con: duckdb.DuckDBPyConnection) -> list[str]:
+    """The phase 4 checkpoint (PLAN.md §12): the calendar by scenario, the coverage matrix
+    and the filled-rate counts."""
+    model = settings.model
+    first, last = model.calendar_years
+    as_of_year = model.as_of.year
+    scenarios = con.sql("SELECT scenario, cpr FROM dim_scenario ORDER BY cpr, scenario").fetchall()
+    named = dict(scenarios)
+    shown = "base" if "base" in named else scenarios[len(scenarios) // 2][0]
+    listed = ", ".join(f"{name} {_percent(cpr)}" for name, cpr in scenarios)
+    matrix, other_share = reset_coverage_matrix(con, first, last, as_of_year, min_share=0.01)
+    loaded = [
+        y for (y,) in con.sql("SELECT DISTINCT activity_year FROM stg_hmda ORDER BY 1").fetchall()
+    ]
+    subsequent = con.sql(
+        "SELECT count(*) FROM fact_reset_calendar WHERE reset_kind = 'subsequent'"
+    ).fetchone()[0]
+    return [
+        "",
+        "## First-reset calendar",
+        "",
+        "HMDA ARMs by the calendar year of their first rate reset (PLAN.md §7.2). Origination "
+        "dates are assumed to be spread evenly over each year, so a loan's reset can split "
+        "across two calendar years, with weights that add up to 1. The balance at reset "
+        "applies scheduled amortization at the note rate, then survival of (1 - CPR)^(k/12).",
+        "",
+        f"- **The CPR scenarios are assumptions, not estimates:** {listed} a year, prepayment "
+        "and default together (`model.scenarios` in config.yaml).",
+        "- **Interest-only ARMs are assumed to stay interest-only through the first reset.** "
+        "HMDA doesn't report the interest-only period, so they reach it without amortizing.",
+        "- **Each scenario holds every loan once.** Never add scenarios together.",
+        "",
+        "### Calendar by scenario",
+        "",
+        f"First resets in {first}-{last} (`model.calendar_years`). ARM loans are weighted "
+        "counts; they and the original amount are the same in every scenario. * The current "
+        f"year ({as_of_year}, from `model.as_of` {model.as_of}) includes resets that already "
+        "happened earlier in the year.",
+        "",
+        markdown_table(reset_calendar_by_scenario(con, first, last, as_of_year)),
+        "",
+        f"### Balance at reset by holder segment, {shown} scenario ($bn)",
+        "",
+        "Holder at origination: 'retained' means not sold in the origination year, so the "
+        "segment is a proxy for today's holder.",
+        "",
+        markdown_table(reset_calendar_by_holder(con, shown, first, last)),
+        "",
+        "### Coverage: reset year by months to first reset",
+        "",
+        f"Loaded origination years: {', '.join(map(str, loaded))}. A reset year is complete "
+        "(✓) for an intro period only when every origination year behind it is loaded; ✗ "
+        "names the missing years, and a percentage gives the share that is loaded. Rows are "
+        "the intro periods holding at least 1% of ARM dollars; the rest "
+        f"({other_share:.1%} of ARM dollars) are in `v_reset_coverage`.",
+        "",
+        markdown_table(matrix),
+        "",
+        "- **Exempt filers:** ARMs from filers exempt from reporting the intro period can't "
+        "be placed in the calendar. Their share of each origination year is the 'exempt "
+        "share' in the HMDA table above.",
+        "- **Reporting thresholds:** lenders below HMDA's reporting thresholds don't file, so "
+        "their loans are absent from every year.",
+        "- **Subsequent resets** (`model.subsequent_resets`): "
+        + (
+            f"on; {subsequent:,} rows are modeled later resets, counted once per reset."
+            if subsequent
+            else "off, so the calendar holds first resets only."
+        ),
+        "",
+        "### Interest rates and terms filled",
+        "",
+        "PLAN.md §7.2: a missing interest rate takes the median rate of ARMs in the same "
+        "origination year, intro_m bucket and conforming status. If none has a rate, the "
+        "next, wider group is used. Missing loan terms are filled the same way. "
+        "Interest-only ARMs are the ones the interest-only assumption applies to.",
+        "",
+        markdown_table(reset_input_counts(con)),
+    ]
+
+
 def report_path(settings: Settings) -> Path:
     return settings.warehouse_path.parent / "qa_report.md"
 
@@ -362,6 +568,8 @@ def write_report(settings: Settings) -> Path:
                     "",
                     markdown_table(coverage),
                 ]
+        if {"fact_reset_calendar", "qa_reset_inputs", "dim_scenario", "v_reset_coverage"} <= names:
+            sections += reset_calendar_sections(settings, con)
     finally:
         con.close()
     path = report_path(settings)

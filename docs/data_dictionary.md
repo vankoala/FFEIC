@@ -82,9 +82,65 @@ HMDA `purchaser_type` → holder segment, from `config/segments.yaml`.
 | `holder_label` | Readable label |
 | `overlaps_with` | Where else these loans show up (Call Report buckets, agency pools, ...) |
 
+### `dim_scenario`
+
+The CPR scenarios in `config.yaml` (`model.scenarios`). **Assumptions, not estimates.**
+
+| Column | Notes |
+|---|---|
+| `scenario` | Scenario name, e.g. `base` |
+| `cpr` | Assumed annual rate of prepayment and default, e.g. 0.10 |
+
+### `dim_code_label`
+
+Readable labels for codes, from `code_labels` in `config/segments.yaml`. Columns: `field`
+(`lender_type`, `conforming_loan_limit` or `occupancy_type`), `code` (as text), `label`.
+
+### `fact_reset_calendar`
+
+HMDA ARMs by the calendar year of their first rate reset (PLAN.md §7.2), for every scenario.
+One row per scenario and combination of the grouping columns. Each scenario holds every ARM
+once: **filter to one scenario, never add scenarios together.**
+
+| Column | Type | Notes |
+|---|---|---|
+| `scenario` | VARCHAR | CPR scenario; joins `dim_scenario` |
+| `reset_kind` | VARCHAR | `first`; `subsequent` rows exist only when `model.subsequent_resets` is on, and count resets, not loans |
+| `reset_year` | INTEGER | Calendar year of the reset |
+| `orig_year` | INTEGER | HMDA activity year: the origination year |
+| `intro_m` | INTEGER | Months from origination to the first reset |
+| `holder_segment` | VARCHAR | Holder at origination, from `purchaser_type` (`dim_purchaser_segment`); `unmapped` for unlisted codes |
+| `lender_type` | VARCHAR | From `dim_hmda_lender` for the origination year; `unknown` when the lender isn't in it |
+| `conforming` | VARCHAR | `conforming_loan_limit`: `C`, `NC`, `U` or `NA` |
+| `occupancy_type` | INTEGER | HMDA code: 1 principal residence, 2 second residence, 3 investment |
+| `state_code`, `lei` | VARCHAR | Property state and lender |
+| `is_io` | BOOLEAN | Interest-only payments; assumed to last through the first reset |
+| `rate_filled`, `term_filled` | BOOLEAN | The interest rate or loan term was missing or out of range, and a median stands in (`qa_reset_inputs`) |
+| `w_loans` | DOUBLE | Weighted loan count: each loan's reset is split over at most two years, with shares adding up to 1 |
+| `orig_amount` | DOUBLE | Original loan amount × share, USD |
+| `bal_at_reset` | DOUBLE | Modeled balance at the reset × share, USD: amount × scheduled amortization × survival at the scenario's CPR |
+
+### `qa_reset_inputs`
+
+What went into the reset calendar: one row per `activity_year`, `intro_bucket` (months to
+first reset, bucketed as in the QA histogram) and `conforming`. These are the filled-rate
+counts of PLAN.md §11.
+
+| Column | Notes |
+|---|---|
+| `arm_loans`, `arm_amount` | ARMs and their original amount, USD |
+| `rate_reported` | ARMs whose reported rate is used |
+| `rate_out_of_range` | ARMs reporting a rate above 20%, treated as missing |
+| `rate_filled` | ARMs whose rate is a median: missing or out of range |
+| `rate_fill_source`, `rate_fill_value` | The group the median came from, e.g. `median: activity_year, intro_bucket, conforming`, and the rate used |
+| `rate_missing` | ARMs left without a rate (no median anywhere); their balance is unknown |
+| `median_reported_rate` | Median of the reported rates in the group |
+| `term_filled`, `term_out_of_range`, `term_missing` | The same for loan terms; out of range means above 600 months |
+| `io_loans`, `io_amount` | Interest-only ARMs and their original amount |
+
 ## Views
 
-The SQL console lists these. `v_reset_calendar` arrives in phase 4.
+The SQL console lists these.
 
 ### `stg_hmda`
 
@@ -121,6 +177,35 @@ One row per `(activity_year, lei)` in the Lender File or the loan file.
 | `match_status` | `matched`, `rssd_not_a_call_report_filer`, `no_rssd`, `not_in_lender_file` or `no_lender_file_for_year` |
 | `call_report_name`, `call_report_date` | The matched filer's name and its latest report date that year |
 | `loans`, `amount`, `arm_loans`, `arm_amount` | The lender's originations that year in `stg_hmda` |
+
+### `v_reset_calendar`
+
+`fact_reset_calendar` with readable labels, the scenario's CPR and the current-year flag. Same
+rows as the fact table; filter to one scenario.
+
+| Column | Notes |
+|---|---|
+| `scenario`, `cpr_assumption` | Scenario and its assumed annual CPR (an assumption, not an estimate) |
+| `reset_kind`, `reset_year`, `orig_year`, `intro_m` | As in `fact_reset_calendar` |
+| `is_current_year` | `reset_year` is the year of `model.as_of`; that bar includes resets that already happened earlier in the year |
+| `holder_segment`, `holder_label` | Holder at origination and its label |
+| `lender_type`, `lender_type_label` | Lender type and its label |
+| `conforming`, `conforming_label` | e.g. `NC`, "Jumbo (nonconforming)" |
+| `occupancy_type`, `occupancy_label` | e.g. 1, "Principal residence" |
+| `state_code`, `lei`, `is_io`, `rate_filled`, `term_filled` | As in `fact_reset_calendar` |
+| `w_loans`, `orig_amount`, `bal_at_reset` | As in `fact_reset_calendar` |
+
+### `v_reset_coverage`
+
+The coverage matrix (PLAN.md §7.2 step 5): one row per reset year and `intro_m` in the
+calendar.
+
+| Column | Notes |
+|---|---|
+| `reset_year`, `intro_m` | The cell |
+| `first_cohort`, `last_cohort` | The origination years whose loans reset in that cell |
+| `coverage` | The share of the cell's origination window that the loaded HMDA years hold, weighted as in the calendar (0 to 1) |
+| `status` | `complete`, `partial` or `missing` |
 
 ### `v_cdr_industry`
 
