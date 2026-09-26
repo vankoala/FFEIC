@@ -37,16 +37,16 @@ at a different config file.
 ```bash
 uv run armtool fetch cdr                               # Call Report bulk zips, 2018Q1 to latest
 uv run armtool fetch lenders                           # Philadelphia Fed HMDA Lender File (15 MB)
-uv run armtool fetch hmda --years 2021                 # HMDA loans (about 5 GB per year, as CSV)
+uv run armtool fetch hmda                              # HMDA loans, 2018-2025 (25 GB of CSV)
 uv run armtool fetch panel --years 2021-2025           # CFPB lender lists (a cross-check only)
-uv run armtool build                                   # staging Parquet, DuckDB tables and views
-uv run armtool validate                                # data/qa_report.md
+uv run armtool build                                   # staging, tables, reset calendar, views
+uv run armtool validate                                # data/qa_report.md, with the calendar
 uv run armtool status                                  # downloads, as-of dates, tables
 uv run armtool spotcheck 852218                        # one bank vs its filed Call Report
 ```
 
-**Quick start.** The full Call Report history takes about 12 minutes to download, and every
-HMDA year about 4. For a first look, fetch one quarter and one year:
+**Quick start.** The full Call Report history takes about 12 minutes to download, and the
+eight HMDA years about 20. For a first look, fetch one quarter and one year:
 
 ```bash
 uv run armtool fetch cdr --start latest                # latest quarter only, under a minute
@@ -56,7 +56,7 @@ uv run armtool build && uv run armtool validate        # then open data/qa_repor
 ```
 
 Without `--years`, `fetch hmda` downloads every year in `config.yaml` (2018–2025), one at a
-time. The 2021 file alone is 5.5 GB of CSV.
+time. That's 25 GB of CSV, kept as 2.7 GB of Parquet; the largest year, 2021, is 5.5 GB.
 
 Downloads go one request at a time, at least 5 seconds apart, and a file recorded in
 `data/raw/manifest.json` is never downloaded again.
@@ -72,7 +72,7 @@ the CDR bulk-data page into `data/raw/cdr/` and run `fetch cdr` again to record 
 | 1 | CDR fetch and ingest, latest quarter | done |
 | 2 | CDR history, `dim_bank`, CDR views | done |
 | 3 | HMDA 2021 and panel | done |
-| 4 | HMDA all years, reset calendar, coverage matrix | next; lender source for all years done |
+| 4 | HMDA all years, reset calendar, coverage matrix | done; checkpoint under review |
 | 5 | Streamlit pages | |
 | 6 | SQL console, optional NL-to-SQL | |
 | 7 | Bloomberg import contract (optional) | |
