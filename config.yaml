@@ -14,10 +14,19 @@ hmda:
 model:
   as_of: 2026-06-30
   calendar_years: [2026, 2032]
-  scenarios:                     # annual CPR incl. defaults. Placeholder assumptions: set your own.
-    low: 0.06
+  scenarios:                     # annual CPR incl. defaults, from as_of to each reset.
+    low: 0.06                    # Placeholder assumptions: set your own.
     base: 0.10
     high: 0.15
+  history_cpr:                   # annual CPR each origination year has shown up to as_of,
+    2018: 0.20                   # the same in every scenario. Placeholders: Claude's rough
+    2019: 0.20                   # estimates, not measured. 2018-2019 refinanced in 2020-21;
+    2020: 0.15                   # 2021-22 have been locked in since rates rose in 2022.
+    2021: 0.05                   # Set your own; a year left out takes the scenario's CPR.
+    2022: 0.05
+    2023: 0.10
+    2024: 0.10
+    2025: 0.10
   subsequent_resets:
     enabled: false
     frequency_months: 12

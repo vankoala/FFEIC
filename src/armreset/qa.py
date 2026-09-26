@@ -262,7 +262,7 @@ def reset_calendar_by_scenario(
     one = _sql_str(scenarios[0][0])  # every scenario holds every loan once
     balances = [
         f"sum(bal_at_reset) FILTER (WHERE scenario = {_sql_str(name)}) / 1e9 "
-        f'AS "{name}, {_percent(cpr)} CPR: balance $bn"'
+        f'AS "{name}, {_percent(cpr)} CPR ahead: balance $bn"'
         for name, cpr in scenarios
     ]
     return con.execute(
@@ -388,6 +388,12 @@ def reset_calendar_sections(settings: Settings, con: duckdb.DuckDBPyConnection) 
     named = dict(scenarios)
     shown = "base" if "base" in named else scenarios[len(scenarios) // 2][0]
     listed = ", ".join(f"{name} {_percent(cpr)}" for name, cpr in scenarios)
+    history = con.sql("SELECT orig_year, cpr FROM dim_history_cpr ORDER BY orig_year").fetchall()
+    history_listed = (
+        ", ".join(f"{year} {_percent(cpr)}" for year, cpr in history)
+        if history
+        else "none set, so every year takes its scenario's CPR throughout"
+    )
     matrix, other_share = reset_coverage_matrix(con, first, last, as_of_year, min_share=0.01)
     loaded = [
         y for (y,) in con.sql("SELECT DISTINCT activity_year FROM stg_hmda ORDER BY 1").fetchall()
@@ -402,10 +408,16 @@ def reset_calendar_sections(settings: Settings, con: duckdb.DuckDBPyConnection) 
         "HMDA ARMs by the calendar year of their first rate reset (PLAN.md §7.2). Origination "
         "dates are assumed to be spread evenly over each year, so a loan's reset can split "
         "across two calendar years, with weights that add up to 1. The balance at reset "
-        "applies scheduled amortization at the note rate, then survival of (1 - CPR)^(k/12).",
+        "applies scheduled amortization at the note rate, then survival at an annual CPR "
+        "(prepayment and default together) that changes at the as-of date.",
         "",
-        f"- **The CPR scenarios are assumptions, not estimates:** {listed} a year, prepayment "
-        "and default together (`model.scenarios` in config.yaml).",
+        f"- **Up to {model.as_of}, each origination year prepays at its history CPR,** the "
+        f"same in every scenario: {history_listed} (`model.history_cpr`). These are "
+        "assumptions until measured, so a reset that has already happened is an assumption "
+        "about the past, not a forecast.",
+        f"- **After {model.as_of}, the scenario's CPR applies:** {listed} (`model.scenarios`). "
+        "They are assumptions, not estimates, and only the part of each bar still ahead "
+        "depends on them.",
         "- **Interest-only ARMs are assumed to stay interest-only through the first reset.** "
         "HMDA doesn't report the interest-only period, so they reach it without amortizing.",
         "- **Each scenario holds every loan once.** Never add scenarios together.",
@@ -568,7 +580,13 @@ def write_report(settings: Settings) -> Path:
                     "",
                     markdown_table(coverage),
                 ]
-        if {"fact_reset_calendar", "qa_reset_inputs", "dim_scenario", "v_reset_coverage"} <= names:
+        if {
+            "fact_reset_calendar",
+            "qa_reset_inputs",
+            "dim_scenario",
+            "dim_history_cpr",
+            "v_reset_coverage",
+        } <= names:
             sections += reset_calendar_sections(settings, con)
     finally:
         con.close()

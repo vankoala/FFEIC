@@ -262,11 +262,33 @@ labels and `v_reset_coverage` says which reset years the data covers in full.
 - **A(k) is scheduled amortization:** the share of the original balance left after k
   level payments at the note rate over the loan term. At a zero rate it falls in a straight
   line.
-- **S(k) is survival, `(1 − CPR)^(k/12)`.** CPR is an annual rate of prepayment and default
-  together.
-- **The CPR scenarios are assumptions, not estimates.** `model.scenarios` in config.yaml holds
-  low 6%, base 10% and high 15%, the placeholders from PLAN.md §10. `dim_scenario` and
-  `v_reset_calendar` (`cpr_assumption`) carry the rate behind every number.
+- **S(k) is survival.** CPR is an annual rate of prepayment and default together, and a loan
+  survives a year at it with probability 1 − CPR.
+- **Survival splits at the as-of date, `model.as_of` (2026-06-30).** The user chose this on
+  2026-09-26 over one flat CPR per scenario, because most of the time to a near reset is
+  already history, and history differed by origination year.
+  - **Up to the as-of date, each origination year prepays at its history CPR**
+    (`model.history_cpr`), the same in every scenario. A reset that has already happened
+    is therefore the same in every scenario.
+  - **After the as-of date, the scenario's CPR applies** (`model.scenarios`: low 6%, base
+    10% and high 15%, the placeholders from PLAN.md §10). Only the part of each bar still
+    ahead depends on the scenario.
+  - **A loan that resets at time t** spends `max(t − as_of, 0)` years in the forecast and the
+    rest of its k months in the history: `S = (1 − history)^(history years) ×
+    (1 − scenario)^(forecast years)`.
+  - **Origination dates are spread evenly,** so the tool averages S over each calendar
+    year's span of reset times, exactly (`survival_between` in `model/amortization.py`).
+  - **Every loan must be originated by the as-of date.** The build stops if `model.as_of` is
+    before the end of the latest HMDA year loaded.
+- **The history CPRs are placeholders, not measurements:** Claude's rough estimates of what
+  each year's loans have done. 2018–2019 loans (median ARM rates of 4.25% and 3.88% in HMDA)
+  refinanced when rates fell in 2020–2021, so they are 20%. 2021 loans (2.88%) have had no
+  reason to refinance since rates rose in 2022, so they are 5%. Agency ARM pool factors (the
+  Bloomberg import, PLAN.md §5.4) could measure them.
+- **A year missing from `model.history_cpr` takes its scenario's CPR** for its history
+  too, which is the flat model of phase 4.
+- **`dim_scenario`, `dim_history_cpr` and `v_reset_calendar`** (`history_cpr_assumption`,
+  `forward_cpr_assumption`) carry the rates behind every number.
 - **Interest-only ARMs are assumed to stay interest-only through the first reset,** so A(k)
   is 1 for them. HMDA doesn't report the interest-only period. They are 29% of ARM dollars in
   2018–2025, from 20.6% to 40.5% by year, so this assumption moves the totals.
@@ -335,7 +357,8 @@ labels and `v_reset_coverage` says which reset years the data covers in full.
 
 ### HMDA
 - **Covers originations only;** balances at reset are modeled.
-- **CPR is an assumption.** The scenarios are placeholders until you set your own.
+- **CPR is an assumption,** both the history up to the as-of date and the scenarios after it.
+  All of them are placeholders until you set your own; HMDA can't measure prepayments.
 - **No origination month**, only the year.
 - **Interest-only length is unknown.** A small number of loans have an exempt
   interest-only flag but a reported intro period; they count as not interest-only.

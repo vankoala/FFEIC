@@ -5,18 +5,24 @@ Public HMDA gives the origination year but not the date, so origination dates ar
 be spread evenly over the year. The first reset comes ``intro_m`` months after origination, so
 each loan's reset falls in at most two calendar years, with weights that sum to 1: every loan
 counts once. Each scenario holds every loan once, so never add scenarios together.
+
+Survival is split at ``model.as_of``. Up to that date each origination year prepays at its
+``history_cpr``, the same in every scenario; after it, at the scenario's CPR. So a reset that
+has already happened is the same in every scenario.
 """
 
 from __future__ import annotations
 
+import calendar
 import logging
 import math
+from datetime import date
 
 import duckdb
 import polars as pl
 
 from armreset.db import relations
-from armreset.model.amortization import sched_factor_sql, survival_sql
+from armreset.model.amortization import sched_factor_sql, survival_between_sql
 from armreset.segments import Segments
 from armreset.settings import FIRST_HMDA_YEAR, ModelConfig
 
@@ -68,29 +74,58 @@ def reset_year_weights(orig_year: int, intro_m: int) -> dict[int, float]:
     return out
 
 
+def reset_year_spans(orig_year: int, intro_m: int) -> dict[int, tuple[float, float]]:
+    """The reset times, in fractional years, that fall in each calendar year:
+    {calendar_year: (first, last)}. Each span's length is its :func:`reset_year_weights`
+    weight."""
+    start = orig_year + intro_m / 12.0
+    return {
+        y: (max(start, y), min(start + 1.0, y + 1)) for y in reset_year_weights(orig_year, intro_m)
+    }
+
+
+def year_fraction(d: date) -> float:
+    """The end of day ``d`` as a fractional year: 2026-06-30 is 2026 + 181/365."""
+    days = 366 if calendar.isleap(d.year) else 365
+    return d.year + d.timetuple().tm_yday / days
+
+
 def split_ctes(source: str, time: str) -> str:
-    """CTEs ``timed`` and ``split``: :func:`reset_year_weights` for every row of ``source``.
+    """CTEs ``timed`` and ``split``: :func:`reset_year_spans` for every row of ``source``.
 
     ``time`` is the reset time in years for a loan originated on January 1. Each row becomes
-    one row per calendar year its reset can fall in, with ``reset_year`` and weight ``w``."""
+    one row per calendar year its reset can fall in, with ``reset_year``, weight ``w`` and the
+    span of reset times in that year, ``t_lo`` to ``t_hi``."""
     return f"""
     timed AS (SELECT *, {time} AS t0 FROM {source}),
     split AS (
         SELECT * FROM (
-            SELECT *, CAST(floor(t0) AS INTEGER)     AS reset_year, (floor(t0) + 1 - t0)     AS w
+            SELECT *, CAST(floor(t0) AS INTEGER)     AS reset_year, (floor(t0) + 1 - t0)     AS w,
+                   t0 AS t_lo, floor(t0) + 1 AS t_hi
             FROM timed
             UNION ALL
-            SELECT *, CAST(floor(t0) AS INTEGER) + 1 AS reset_year, 1 - (floor(t0) + 1 - t0) AS w
+            SELECT *, CAST(floor(t0) AS INTEGER) + 1 AS reset_year, 1 - (floor(t0) + 1 - t0) AS w,
+                   floor(t0) + 1 AS t_lo, t0 + 1 AS t_hi
             FROM timed
         ) WHERE w > {MIN_WEIGHT}
     )"""
 
 
 def scenario_table(model: ModelConfig) -> pl.DataFrame:
-    """``dim_scenario``: the CPR scenarios in config.yaml. Assumptions, not estimates."""
+    """``dim_scenario``: the CPR scenarios in config.yaml, applied from ``model.as_of`` to each
+    reset. Assumptions, not estimates."""
     return pl.DataFrame(
         {"scenario": list(model.scenarios), "cpr": list(model.scenarios.values())},
         schema={"scenario": pl.Utf8, "cpr": pl.Float64},
+    )
+
+
+def history_table(model: ModelConfig) -> pl.DataFrame:
+    """``dim_history_cpr``: the CPR each origination year has shown up to ``model.as_of``, the
+    same in every scenario. Assumptions until measured."""
+    return pl.DataFrame(
+        {"orig_year": list(model.history_cpr), "cpr": list(model.history_cpr.values())},
+        schema={"orig_year": pl.Int32, "cpr": pl.Float64},
     )
 
 
@@ -204,6 +239,16 @@ def _fact_sql(model: ModelConfig) -> str:
     # gives both: A = 1 at the first reset.
     io_shift = "(CASE WHEN x.is_io THEN x.intro_m ELSE 0 END)"
     factor = sched_factor_sql("x.rate_used", f"x.term_used - {io_shift}", f"x.k - {io_shift}")
+    # History CPR up to as_of (the scenario's where the year has none), then the scenario's.
+    # The integral over each year's span of reset times already carries the weight w.
+    survival = survival_between_sql(
+        "coalesce(h.cpr, s.cpr)",
+        "s.cpr",
+        "x.k",
+        "x.t_lo",
+        "x.t_hi",
+        repr(year_fraction(model.as_of)),
+    )
     subsequent = ""
     if model.subsequent_resets.enabled:
         # PLAN.md §7.2 step 6: after the first reset, every frequency_months until maturity,
@@ -243,10 +288,11 @@ def _fact_sql(model: ModelConfig) -> str:
         x.term_source <> 'reported'          AS term_filled,
         sum(x.w)                             AS w_loans,
         sum(x.w * x.loan_amount)             AS orig_amount,
-        sum(x.w * x.loan_amount * ({factor}) * {survival_sql("s.cpr", "x.k")})
+        sum(x.loan_amount * ({factor}) * {survival})
                                              AS bal_at_reset
     FROM split x
     CROSS JOIN dim_scenario s
+    LEFT JOIN dim_history_cpr h ON h.orig_year = x.activity_year
     GROUP BY ALL
     """
 
@@ -255,10 +301,18 @@ def build_reset_calendar(
     con: duckdb.DuckDBPyConnection, model: ModelConfig, segments: Segments
 ) -> dict[str, int]:
     """Write ``fact_reset_calendar`` and ``qa_reset_inputs`` from ``stg_hmda``; returns their
-    row counts. Needs ``stg_hmda``, ``dim_purchaser_segment`` and ``dim_scenario``. Lender
-    types come from ``dim_hmda_lender``, or are unknown without it."""
+    row counts. Needs ``stg_hmda``, ``dim_purchaser_segment``, ``dim_scenario`` and
+    ``dim_history_cpr``. Lender types come from ``dim_hmda_lender``, or are unknown without
+    it."""
     with_lenders = "dim_hmda_lender" in {name for name, _ in relations(con)}
     con.execute(_loans_sql(segments, with_lenders))
+    # History runs from origination to as_of, so every loan must be originated by then.
+    last = con.execute("SELECT max(activity_year) FROM reset_loans").fetchone()[0]
+    if last is not None and year_fraction(model.as_of) < last + 1:
+        raise ValueError(
+            f"model.as_of ({model.as_of}) is before the end of {last}, the latest origination "
+            f"year loaded; set it to {last}-12-31 or later"
+        )
     no_rate, no_term = con.execute(
         "SELECT count(*) FILTER (WHERE rate_used IS NULL), "
         "count(*) FILTER (WHERE term_used IS NULL) FROM reset_loans"

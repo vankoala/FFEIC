@@ -12,21 +12,19 @@ Where the build stands and what comes next. Claude Code keeps this page current 
 | 2 | Call Report history 2018Q1–2026Q2, `dim_bank`, Call Report views | Done |
 | 3 | HMDA 2021 and its lenders | Done |
 | – | Lender source for every year: the Philadelphia Fed HMDA Lender File | Done (user decision) |
-| 4 | HMDA all years, reset calendar model, coverage matrix | **Done; checkpoint waiting on the user** |
-| 5 | Streamlit pages 1–4 and 6 | Next, after the review |
+| 4 | HMDA all years, reset calendar model, coverage matrix | Done; survival split at the as-of date added after the review |
+| 5 | Streamlit pages 1–4 and 6 | **In progress** |
 | 6 | SQL console, optional NL-to-SQL | |
 | 7 | Bloomberg import contract (optional) | |
 
-199 tests pass. All work is on the branch `claude/arm-reset-tool-build-0o47u0`, which is also
+212 tests pass. All work is on the branch `claude/arm-reset-tool-build-0o47u0`, which is also
 GitHub's default branch.
 
-## Phase 4 checkpoint
+## Phase 4
 
-The three outputs PLAN.md §12 asks for are in `data/qa_report.md` under "First-reset
-calendar", which `armtool validate` writes:
-- the calendar table by scenario, plus the base scenario by holder segment;
-- the coverage matrix: reset year by months to first reset;
-- the filled-rate counts, with the filled terms and the interest-only ARMs.
+The checkpoint outputs are in `data/qa_report.md` under "First-reset calendar", which
+`armtool validate` writes: the calendar by scenario, the coverage matrix and the filled-rate
+counts.
 
 What phase 4 did:
 1. **HMDA 2018–2025:** downloaded and checked, year by year (`docs/verification.md`,
@@ -43,11 +41,21 @@ What phase 4 did:
    the view `v_reset_calendar` with labels, the CPR assumption and the current-year flag.
 6. **Coverage matrix:** `v_reset_coverage`.
 7. **Subsequent resets:** built and tested; off by default (`model.subsequent_resets`).
+8. **After the review, survival splits at `model.as_of`** (the user's choice, 2026-09-26):
+   each origination year's history CPR up to the as-of date, the scenario's CPR after it.
+   Resets already past are the same in every scenario, and the scenarios move only what is
+   still ahead.
 
-## Next: phase 5
+## Now: phase 5
 
-After the review: the Streamlit pages 1–4 and 6 (PLAN.md §8), with a screenshot of each at
-the checkpoint. The bank drill-down page carries the HMDA vs Call Report cross-check (§7.3).
+The Streamlit pages of PLAN.md §8, with a screenshot of each at the checkpoint:
+1. `armtool app`, with the reset calendar as the home page.
+2. Reset calendar: stacked bars by holder segment, the controls of §8, the coverage matrix
+   and a CSV download.
+3. Bank repricing: the industry buckets over time and the latest-quarter bank table.
+4. Bank drill-down, with the HMDA vs Call Report cross-check (§7.3).
+5. HMDA explorer.
+6. Methodology.
 
 ## Open items
 
@@ -56,8 +64,11 @@ None.
 ## Waiting on the user
 
 - **CPR scenarios.** `model.scenarios` in `config.yaml` (low 6%, base 10%, high 15%) are the
-  plan's placeholders. The phase 4 outputs use them and say so. Give your own values, or keep
-  these.
+  plan's placeholders, now applied from the as-of date on. The outputs use them and say so.
+  Give your own values, or keep these.
+- **History CPRs.** `model.history_cpr` holds Claude's rough placeholders: 20% for 2018–2019,
+  15% for 2020, 5% for 2021–2022 and 10% for 2023–2025. Give your own values, or measure
+  them later from agency ARM pool factors (phase 7).
 - **Two data-quality limits, set in phase 4.** A reported rate above 20% or a term above 600
   months counts as a keying error and gets the median. That covers 19 rates and 116 terms out
   of 3,225,980 ARMs. Say if you want other limits.
@@ -104,8 +115,9 @@ for a bug.
   `bank`. They originated 81.3% of 2021 ARM dollars.
 - **Spot check:** for JPMorgan Chase Bank (RSSD 852218, 2026-06-30), all nine items match its
   filed Call Report.
-- **Reset calendar, base scenario (10% CPR):** $83.4bn reaches its first reset in 2026, $80.6bn
-  in 2027 and $105.9bn in 2032. 3,664 ARMs have a filled rate and 1,747 a filled term.
+- **Reset calendar, base scenario** (10% CPR after 2026-06-30, the placeholder history CPRs
+  before it): $66.2bn reaches its first reset in 2026, $77.9bn in 2027 and $115.3bn in 2032.
+  3,664 ARMs have a filled rate and 1,747 a filled term.
 
 ## Decisions
 
@@ -118,12 +130,16 @@ for a bug.
 | 2026-09-25 | The project moved from a Claude Code on the web session to a local Claude Code session on the user's machine (WSL). |
 | 2026-09-25 | The user chose to keep commits authored as `Claude <noreply@anthropic.com>`, set in this repo's git config, as in the web session. The repo is public. |
 | 2026-09-25 | Reported rates above 20% and terms above 600 months are keying errors, filled like missing values. Claude's call, for the user's review. |
+| 2026-09-26 | Survival splits at `model.as_of`: each origination year's history CPR up to it, the scenario's CPR after it (the user chose this over one flat CPR per scenario). The history CPRs are Claude's placeholders until the user sets them. |
+| 2026-09-26 | The user reviewed the phase 4 checkpoint and asked for phase 5. |
 
 ## Log
 
 Newest first.
 
-- **2026-09-25:** Phase 4 checkpoint: this page and the README's build status.
+- **2026-09-26:** Survival splits at the as-of date: history CPRs by origination year, then
+  the scenario's CPR.
+- **2026-09-25 (9b029bb):** Phase 4 checkpoint: this page and the README's build status.
 - **2026-09-25 (47ed799):** Phase 4: HMDA 2018–2025, the first-reset calendar, the coverage
   matrix and the filled-rate counts.
 - **2026-09-25:** Rebuilt `data/` on the user's machine. Every reference result matched.

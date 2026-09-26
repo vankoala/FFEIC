@@ -72,8 +72,8 @@ the CDR bulk-data page into `data/raw/cdr/` and run `fetch cdr` again to record 
 | 1 | CDR fetch and ingest, latest quarter | done |
 | 2 | CDR history, `dim_bank`, CDR views | done |
 | 3 | HMDA 2021 and panel | done |
-| 4 | HMDA all years, reset calendar, coverage matrix | done; checkpoint under review |
-| 5 | Streamlit pages | |
+| 4 | HMDA all years, reset calendar, coverage matrix | done |
+| 5 | Streamlit pages | in progress |
 | 6 | SQL console, optional NL-to-SQL | |
 | 7 | Bloomberg import contract (optional) | |
 

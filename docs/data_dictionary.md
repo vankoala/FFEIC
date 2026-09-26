@@ -84,12 +84,24 @@ HMDA `purchaser_type` → holder segment, from `config/segments.yaml`.
 
 ### `dim_scenario`
 
-The CPR scenarios in `config.yaml` (`model.scenarios`). **Assumptions, not estimates.**
+The CPR scenarios in `config.yaml` (`model.scenarios`), applied from `model.as_of` to each
+reset. **Assumptions, not estimates.**
 
 | Column | Notes |
 |---|---|
 | `scenario` | Scenario name, e.g. `base` |
-| `cpr` | Assumed annual rate of prepayment and default, e.g. 0.10 |
+| `cpr` | Assumed annual rate of prepayment and default after the as-of date, e.g. 0.10 |
+
+### `dim_history_cpr`
+
+The CPR each origination year is assumed to have shown from origination to `model.as_of`
+(`model.history_cpr`), the same in every scenario. **Placeholders until measured.** A year
+not listed takes its scenario's CPR.
+
+| Column | Notes |
+|---|---|
+| `orig_year` | HMDA activity year |
+| `cpr` | Assumed annual rate of prepayment and default up to the as-of date |
 
 ### `dim_code_label`
 
@@ -118,7 +130,7 @@ once: **filter to one scenario, never add scenarios together.**
 | `rate_filled`, `term_filled` | BOOLEAN | The interest rate or loan term was missing or out of range, and a median stands in (`qa_reset_inputs`) |
 | `w_loans` | DOUBLE | Weighted loan count: each loan's reset is split over at most two years, with shares adding up to 1 |
 | `orig_amount` | DOUBLE | Original loan amount × share, USD |
-| `bal_at_reset` | DOUBLE | Modeled balance at the reset × share, USD: amount × scheduled amortization × survival at the scenario's CPR |
+| `bal_at_reset` | DOUBLE | Modeled balance at the reset × share, USD: amount × scheduled amortization × survival, at the origination year's history CPR up to `model.as_of` and the scenario's CPR after it |
 
 ### `qa_reset_inputs`
 
@@ -185,7 +197,9 @@ rows as the fact table; filter to one scenario.
 
 | Column | Notes |
 |---|---|
-| `scenario`, `cpr_assumption` | Scenario and its assumed annual CPR (an assumption, not an estimate) |
+| `scenario` | CPR scenario |
+| `history_cpr_assumption` | The origination year's assumed CPR up to `model.as_of` (the scenario's when the year has none) |
+| `forward_cpr_assumption` | The scenario's assumed CPR after `model.as_of` |
 | `reset_kind`, `reset_year`, `orig_year`, `intro_m` | As in `fact_reset_calendar` |
 | `is_current_year` | `reset_year` is the year of `model.as_of`; that bar includes resets that already happened earlier in the year |
 | `holder_segment`, `holder_label` | Holder at origination and its label |

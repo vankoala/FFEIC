@@ -80,13 +80,24 @@ class SubsequentResets(BaseModel):
     frequency_months: int = Field(12, gt=0)
 
 
+def _cpr_bounds(v: dict) -> dict:
+    if bad := {k: cpr for k, cpr in v.items() if not 0 <= cpr < 1}:
+        raise ValueError(f"CPR must be an annual rate in [0, 1): {bad}")
+    return v
+
+
 class ModelConfig(BaseModel):
     as_of: date = date(2026, 6, 30)
     calendar_years: tuple[int, int] = (2026, 2032)
-    # Annual CPR including defaults. Placeholder assumptions, not estimates.
+    # Annual CPR including defaults, from as_of to each reset. Placeholder assumptions, not
+    # estimates.
     scenarios: dict[str, float] = Field(
         default_factory=lambda: {"low": 0.06, "base": 0.10, "high": 0.15}
     )
+    # Annual CPR each origination year has shown from origination to as_of, the same in every
+    # scenario. A year not listed takes its scenario's CPR there too. Assumptions until
+    # measured.
+    history_cpr: dict[int, float] = Field(default_factory=dict)
     subsequent_resets: SubsequentResets = Field(default_factory=SubsequentResets)
     io_assumption: Literal["io_through_first_reset"] = "io_through_first_reset"
 
@@ -99,12 +110,15 @@ class ModelConfig(BaseModel):
 
     @field_validator("scenarios")
     @classmethod
-    def _cpr_bounds(cls, v: dict[str, float]) -> dict[str, float]:
+    def _scenario_bounds(cls, v: dict[str, float]) -> dict[str, float]:
         if not v:
             raise ValueError("define at least one CPR scenario")
-        if bad := {k: cpr for k, cpr in v.items() if not 0 <= cpr < 1}:
-            raise ValueError(f"CPR must be an annual rate in [0, 1): {bad}")
-        return v
+        return _cpr_bounds(v)
+
+    @field_validator("history_cpr")
+    @classmethod
+    def _history_bounds(cls, v: dict[int, float]) -> dict[int, float]:
+        return _cpr_bounds(v)
 
 
 class LlmConfig(BaseModel):

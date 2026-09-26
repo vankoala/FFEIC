@@ -72,6 +72,7 @@ def test_missing_config_is_a_clear_error(tmp_path: Path, monkeypatch: pytest.Mon
         ({"cdr": {"start": "2018Q5"}}, "Not a quarter"),
         ({"hmda": {"years": [2017, 2018]}}, "predate 2018"),
         ({"model": {"scenarios": {"base": 1.5}}}, "CPR"),
+        ({"model": {"history_cpr": {2019: -0.1}}}, "CPR"),
         ({"model": {"calendar_years": [2032, 2026]}}, "after last year"),
         ({"model": {"subsequent_resets": {"frequency_months": 0}}}, "frequency_months"),
         ({"not_a_setting": 1}, "not_a_setting"),

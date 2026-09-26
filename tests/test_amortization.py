@@ -1,7 +1,27 @@
 import duckdb
 import pytest
 
-from armreset.model.amortization import sched_factor, sched_factor_sql, survival, survival_sql
+from armreset.model.amortization import (
+    sched_factor,
+    sched_factor_sql,
+    survival,
+    survival_between,
+    survival_between_sql,
+    survival_sql,
+)
+
+AS_OF = 2026 + 181 / 365  # 2026-06-30, end of day
+# (history CPR, forward CPR, months to reset, first and last reset time): resets entirely
+# before the as-of date, across it, entirely after it, with equal rates, a 1-month intro.
+SPANS = [
+    (0.20, 0.10, 84, 2025.3, 2026.0),
+    (0.20, 0.10, 84, 2026.0, 2027.0),
+    (0.05, 0.15, 60, 2026.0, 2027.0),
+    (0.05, 0.15, 120, 2027.0, 2027.4),
+    (0.10, 0.10, 60, 2026.2, 2026.9),
+    (0.30, 0.06, 1, 2026.4, 2026.6),
+    (0.00, 0.25, 36, 2026.5, 2027.5),
+]
 
 
 # PLAN.md §11: sched_factor
@@ -61,3 +81,42 @@ def test_survival() -> None:
     assert survival(0.10, 60) == pytest.approx(0.9**5)
     assert survival(0.0, 120) == 1.0
     assert survival(0.15, 60) < survival(0.10, 60) < survival(0.06, 60)
+
+
+def _survival_numeric(history, forward, k_m, t_lo, t_hi, steps=20_000) -> float:
+    """The survival integral by brute force: midpoints of many small steps."""
+    width = (t_hi - t_lo) / steps
+    total = 0.0
+    for i in range(steps):
+        ahead = max(t_lo + (i + 0.5) * width - AS_OF, 0.0)  # years after the as-of date
+        total += (1 - history) ** (k_m / 12 - ahead) * (1 - forward) ** ahead * width
+    return total
+
+
+@pytest.mark.parametrize(("history", "forward", "k_m", "t_lo", "t_hi"), SPANS)
+def test_survival_between_matches_a_numeric_integral(history, forward, k_m, t_lo, t_hi) -> None:
+    got = survival_between(history, forward, k_m, t_lo, t_hi, AS_OF)
+    assert got == pytest.approx(_survival_numeric(history, forward, k_m, t_lo, t_hi), rel=1e-7)
+
+
+def test_survival_between_splits_at_the_as_of_date() -> None:
+    # Before the as-of date only history counts; with equal rates it is plain survival.
+    assert survival_between(0.2, 0.1, 84, 2025.0, 2026.0, AS_OF) == pytest.approx(0.8**7)
+    assert survival_between(0.2, 0.9, 84, 2025.0, 2026.0, AS_OF) == pytest.approx(0.8**7)
+    assert survival_between(0.1, 0.1, 60, 2026.0, 2027.0, AS_OF) == pytest.approx(0.9**5)
+    # After it, the forecast rate takes over year by year.
+    later = survival_between(0.2, 0.1, 120, 2030.0, 2030.5, AS_OF)
+    assert later > survival_between(0.2, 0.2, 120, 2030.0, 2030.5, AS_OF)
+
+
+def test_survival_between_sql_matches_python() -> None:
+    con = duckdb.connect()
+    con.execute("CREATE TABLE s (h DOUBLE, c DOUBLE, k INTEGER, lo DOUBLE, hi DOUBLE)")
+    con.executemany("INSERT INTO s VALUES (?, ?, ?, ?, ?)", SPANS)
+    got = con.execute(
+        f"SELECT h, c, k, lo, hi, {survival_between_sql('h', 'c', 'k', 'lo', 'hi', repr(AS_OF))} "
+        "FROM s"
+    ).fetchall()
+    assert len(got) == len(SPANS)
+    for h, c, k, lo, hi, value in got:
+        assert value == pytest.approx(survival_between(h, c, k, lo, hi, AS_OF), rel=1e-12)

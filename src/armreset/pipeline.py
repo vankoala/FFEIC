@@ -15,7 +15,7 @@ from armreset.ingest.hmda import StagedYear, stage_year, staged_years, stg_dir
 from armreset.ingest.lenders import build_dim_hmda_lender
 from armreset.manifest import Manifest
 from armreset.model.repricing import build_dim_bank, build_fact, qa_flags
-from armreset.model.reset_calendar import build_reset_calendar, scenario_table
+from armreset.model.reset_calendar import build_reset_calendar, history_table, scenario_table
 from armreset.segments import Segments
 from armreset.settings import Settings
 
@@ -115,6 +115,7 @@ def build(settings: Settings, force: bool = False) -> BuildSummary:
     if staged_years(settings):
         tables["dim_purchaser_segment"] = segments.purchaser_table()
         tables["dim_scenario"] = scenario_table(settings.model)
+        tables["dim_history_cpr"] = history_table(settings.model)
         tables["dim_code_label"] = segments.label_table()
         params["stg_hmda_glob"] = (stg_dir(settings) / "activity_year=*" / "*.parquet").as_posix()
         params["as_of_year"] = str(settings.model.as_of.year)

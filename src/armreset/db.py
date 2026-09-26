@@ -165,17 +165,25 @@ VIEWS: dict[str, tuple[frozenset[str], str]] = {
                ON c.rssd_id = l.respondent_rssd AND c.activity_year = l.activity_year
         """,
     ),
-    # fact_reset_calendar with readable labels and the scenario's CPR, an assumption. Each
+    # fact_reset_calendar with readable labels and the CPRs behind each row, both assumptions:
+    # the origination year's history CPR up to model.as_of, and the scenario's after it. Each
     # scenario holds every loan once: filter to one scenario, never add scenarios together.
     # The current year's bar includes resets that already happened earlier in the year.
     "v_reset_calendar": (
         frozenset(
-            {"fact_reset_calendar", "dim_scenario", "dim_purchaser_segment", "dim_code_label"}
+            {
+                "fact_reset_calendar",
+                "dim_scenario",
+                "dim_history_cpr",
+                "dim_purchaser_segment",
+                "dim_code_label",
+            }
         ),
         """
         SELECT
             f.scenario,
-            s.cpr                                           AS cpr_assumption,
+            coalesce(hc.cpr, s.cpr)                         AS history_cpr_assumption,
+            s.cpr                                           AS forward_cpr_assumption,
             f.reset_kind,
             f.reset_year,
             f.reset_year = {as_of_year}                     AS is_current_year,
@@ -199,6 +207,7 @@ VIEWS: dict[str, tuple[frozenset[str], str]] = {
             f.bal_at_reset
         FROM fact_reset_calendar f
         JOIN dim_scenario s USING (scenario)
+        LEFT JOIN dim_history_cpr hc ON hc.orig_year = f.orig_year
         LEFT JOIN (SELECT DISTINCT holder_segment, holder_label FROM dim_purchaser_segment) h
                USING (holder_segment)
         LEFT JOIN dim_code_label lt ON lt.field = 'lender_type' AND lt.code = f.lender_type

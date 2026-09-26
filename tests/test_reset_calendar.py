@@ -1,9 +1,11 @@
 from collections import defaultdict
+from datetime import date
 from pathlib import Path
 
 import duckdb
 import polars as pl
 import pytest
+import yaml
 from hypothesis import given
 from hypothesis import strategies as st
 
@@ -12,11 +14,17 @@ from armreset.fetch.hmda import csv_to_parquet
 from armreset.fetch.lenders import KEY as LENDER_KEY
 from armreset.fetch.lenders import lender_file_path
 from armreset.manifest import Manifest
-from armreset.model.amortization import sched_factor, survival
-from armreset.model.reset_calendar import FILL_SOURCES, reset_year_weights, split_ctes
+from armreset.model.amortization import sched_factor, survival, survival_between
+from armreset.model.reset_calendar import (
+    FILL_SOURCES,
+    reset_year_spans,
+    reset_year_weights,
+    split_ctes,
+    year_fraction,
+)
 from armreset.pipeline import build
 from armreset.qa import write_report
-from armreset.settings import Settings, load_settings
+from armreset.settings import ModelConfig, Settings, load_settings
 from tests.conftest import REPO_ROOT
 from tests.hmda_fixtures import (
     BANK_LEI,
@@ -43,6 +51,13 @@ def test_reset_year_weights_sum_to_one(orig_year: int, intro_m: int) -> None:
     assert 1 <= len(weights) <= 2
     assert min(weights) == orig_year + intro_m // 12
     assert all(w > 0 for w in weights.values())
+
+
+def test_year_fraction_is_the_end_of_the_day() -> None:
+    assert year_fraction(date(2026, 6, 30)) == 2026 + 181 / 365
+    assert year_fraction(date(2025, 12, 31)) == 2026.0
+    assert year_fraction(date(2024, 12, 31)) == 2025.0  # leap year
+    assert year_fraction(date(2026, 1, 1)) == 2026 + 1 / 365
 
 
 def test_sql_split_matches_python() -> None:
@@ -153,22 +168,25 @@ def _rows(con: duckdb.DuckDBPyConnection, sql: str) -> list[dict]:
     return [dict(zip(names, r, strict=True)) for r in cursor.fetchall()]
 
 
-def _expected_balances(loans: dict[str, tuple]) -> dict[tuple[str, int], float]:
+def _expected_balances(loans: dict[str, tuple], model: ModelConfig) -> dict[tuple[str, int], float]:
     """The calendar from the reference functions: balance at the first reset by scenario and
-    reset year."""
+    reset year, with each origination year's history CPR up to the as-of date."""
+    as_of_t = year_fraction(model.as_of)
     out: dict[tuple[str, int], float] = defaultdict(float)
     for orig_year, intro, amount, rate, term, io in loans.values():
-        for scenario, cpr in CPR.items():
-            factor = sched_factor(rate, term, intro, io) * survival(cpr, intro)
-            for reset_year, w in reset_year_weights(orig_year, intro).items():
-                out[(scenario, reset_year)] += amount * w * factor
+        factor = sched_factor(rate, term, intro, io)
+        for scenario, cpr in model.scenarios.items():
+            history = model.history_cpr.get(orig_year, cpr)
+            for reset_year, (t_lo, t_hi) in reset_year_spans(orig_year, intro).items():
+                share = survival_between(history, cpr, intro, t_lo, t_hi, as_of_t)
+                out[(scenario, reset_year)] += amount * factor * share
     return out
 
 
-def test_the_calendar_matches_the_python_model(built: Settings) -> None:
-    con = connect(built, read_only=True)
+def _balances_by_year(s: Settings) -> dict[tuple[str, int], float]:
+    con = connect(s, read_only=True)
     try:
-        got = {
+        return {
             (r["scenario"], r["reset_year"]): r["bal"]
             for r in _rows(
                 con,
@@ -178,10 +196,46 @@ def test_the_calendar_matches_the_python_model(built: Settings) -> None:
         }
     finally:
         con.close()
-    expected = _expected_balances(EXPECT)
+
+
+def test_the_calendar_matches_the_python_model(built: Settings) -> None:
+    assert {2021, 2022} <= set(built.model.history_cpr)  # the book's years have a history CPR
+    got = _balances_by_year(built)
+    expected = _expected_balances(EXPECT, built.model)
     assert set(got) == set(expected)
     for key, value in expected.items():
         assert got[key] == pytest.approx(value, rel=1e-9), key
+
+
+def _set_model(project: Path, **values) -> None:
+    """Replace keys under ``model`` in the project's config.yaml (patch_config merges)."""
+    path = project / "config.yaml"
+    config = yaml.safe_load(path.read_text())
+    config["model"].update(values)
+    path.write_text(yaml.safe_dump(config, sort_keys=False))
+
+
+def test_a_year_without_history_takes_the_scenario_cpr(project: Path) -> None:
+    _set_model(project, history_cpr={2021: 0.25})
+    s = load_settings()
+    _record_book(s)
+    build(s)
+    got = _balances_by_year(s)
+    expected = _expected_balances(EXPECT, s.model)
+    assert got == pytest.approx(expected, rel=1e-9)
+    # 2022's 3-year ARM reset in 2025, before the as-of date. With no history CPR for 2022
+    # it takes each scenario's CPR, the flat model of phase 4.
+    for scenario, cpr in s.model.scenarios.items():
+        flat = 305_000 * sched_factor(5.0, 360, 36) * survival(cpr, 36)
+        assert got[(scenario, 2025)] == pytest.approx(flat, rel=1e-9)
+
+
+def test_as_of_before_the_last_origination_year_is_refused(project: Path) -> None:
+    _set_model(project, as_of="2022-06-30")
+    s = load_settings()
+    _record_book(s)
+    with pytest.raises(ValueError, match=r"model.as_of \(2022-06-30\).*2022-12-31"):
+        build(s)
 
 
 def test_every_arm_counts_once_in_each_scenario(built: Settings) -> None:
@@ -206,7 +260,7 @@ def test_every_arm_counts_once_in_each_scenario(built: Settings) -> None:
         assert r["later"] == 0  # subsequent resets are off by default
 
 
-def test_a_higher_cpr_leaves_less_balance(built: Settings) -> None:
+def test_scenarios_change_only_what_is_still_ahead(built: Settings) -> None:
     con = connect(built, read_only=True)
     try:
         years = _rows(
@@ -220,8 +274,14 @@ def test_a_higher_cpr_leaves_less_balance(built: Settings) -> None:
         )
     finally:
         con.close()
+    as_of_year = built.model.as_of.year
+    assert {y["reset_year"] for y in years} & set(range(2021, as_of_year))  # some in the past
     for y in years:
-        assert y["orig"] > y["low"] > y["base"] > y["high"] > 0, y
+        if y["reset_year"] < as_of_year:
+            # Resets before the as-of year have happened: history only, whatever the scenario.
+            assert y["orig"] > y["low"] == pytest.approx(y["base"]) == pytest.approx(y["high"])
+        else:
+            assert y["orig"] > y["low"] > y["base"] > y["high"] > 0, y
 
 
 def test_six_month_intro_splits_across_two_years(built: Settings) -> None:
@@ -308,8 +368,10 @@ def test_reset_calendar_view_labels_every_row(built: Settings) -> None:
     finally:
         con.close()
     assert len(view) == facts
+    history = built.model.history_cpr
     for r in view:
-        assert r["cpr_assumption"] == CPR[r["scenario"]]
+        assert r["forward_cpr_assumption"] == CPR[r["scenario"]]
+        assert r["history_cpr_assumption"] == history[r["orig_year"]]
         assert r["is_current_year"] == (r["reset_year"] == 2026)  # model.as_of 2026-06-30
     labels = {(r["conforming"], r["conforming_label"]) for r in view}
     assert labels == {("C", "Conforming"), ("NC", "Jumbo (nonconforming)"), ("U", "Undetermined")}
@@ -366,19 +428,24 @@ def test_subsequent_resets_roll_the_balance_forward(project: Path, patch_config)
     finally:
         con.close()
     assert first == pytest.approx(len(EXPECT))  # first resets are unchanged
+    as_of_t, history = year_fraction(s.model.as_of), s.model.history_cpr[2021]
+
+    def survives(k: int, reset_year: int) -> float:
+        return survival_between(history, 0.10, k, reset_year, reset_year + 1, as_of_t)
+
     # Loan A resets first in 2026 (60 months), then every 12 months through 2032.
     a = [r for r in later if r["state_code"] == "CA"]
     assert [r["reset_year"] for r in a] == list(range(2027, 2033))
     for r in a:
         k = 12 * (r["reset_year"] - 2021)
         assert r["w_loans"] == 1.0
-        expected = 805_000 * sched_factor(3.0, 360, k) * survival(0.10, k)
+        expected = 805_000 * sched_factor(3.0, 360, k) * survives(k, r["reset_year"])
         assert r["bal_at_reset"] == pytest.approx(expected, rel=1e-9)
     # The interest-only loan C amortizes only after its first reset in 2031.
     [c] = [r for r in later if r["lei"] == IMC_LEI]
     assert c["reset_year"] == 2032
     assert c["bal_at_reset"] == pytest.approx(
-        505_000 * sched_factor(3.5, 360 - 120, 12) * survival(0.10, 132), rel=1e-9
+        505_000 * sched_factor(3.5, 360 - 120, 12) * survives(132, 2032), rel=1e-9
     )
     assert max(r["reset_year"] for r in later) <= 2033  # model.calendar_years ends in 2032
 
